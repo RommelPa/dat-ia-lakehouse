@@ -148,9 +148,10 @@ for source in SOURCES:
 
     if OVERWRITE_EXISTING:
         writer = writer.mode("overwrite").option("overwriteSchema", "true")
-    else:
-        writer = writer.mode("errorifexists")
 
+    # Para tablas nuevas usamos el comportamiento por defecto de saveAsTable.
+    # En Databricks Serverless/Spark Connect el modo explícito "errorifexists"
+    # no está soportado, por eso evitamos configurarlo aquí.
     writer.saveAsTable(target_table)
 
     print(f"OK   {target_table}: {row_count:,} filas.")
