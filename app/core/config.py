@@ -8,6 +8,8 @@ La clase ``Settings`` es la única fuente de configuración nueva que se irá
 adoptando gradualmente durante el refactor estructural.
 """
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +21,13 @@ class Settings(BaseSettings):
 
     google_api_key: str | None = None
     database_url: str | None = None
+    query_backend: Literal["postgres", "databricks"] = "postgres"
+
+    databricks_server_hostname: str | None = None
+    databricks_http_path: str | None = None
+    databricks_catalog: str = "dat_ia"
+    databricks_schema: str = "gold"
+    databricks_auth_type: str = "databricks-oauth"
 
     model: str = "gemini-3.1-flash-lite-preview"
     embed_model: str = "gemini-embedding-2"
