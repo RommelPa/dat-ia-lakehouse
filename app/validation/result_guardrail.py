@@ -109,6 +109,20 @@ def _parse_answer_number_candidates(raw: str) -> set[float]:
     return candidates
 
 
+def _numbers_match(candidate: float, value: float, tolerance: float) -> bool:
+    """Compara números sin permitir tolerancia relativa sobre conteos enteros.
+
+    Los conteos deben coincidir exactamente: una tolerancia relativa de 1 %
+    haría que 99 441 pareciera compatible con muchos enteros cercanos. Para
+    valores con parte decimal se conserva la tolerancia histórica, necesaria
+    para redondeos como 0.9701 -> 0.97.
+    """
+    if candidate.is_integer() and value.is_integer():
+        return candidate == value
+
+    return abs(candidate - value) <= tolerance * max(abs(value), 1)
+
+
 def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
     """Obtiene valores crudos y equivalentes porcentuales de las filas."""
     raw_values: set[float] = set()
@@ -209,6 +223,11 @@ def check_groundedness(
     decimal y miles; se prueban ambas lecturas y solo se acepta una si está
     respaldada por los datos ejecutados.
 
+    Los conteos enteros deben coincidir exactamente; la tolerancia relativa
+    se aplica únicamente cuando al menos uno de los valores tiene parte
+    decimal. Esto evita falsos negativos en redondeos sin aceptar conteos
+    cercanos pero incorrectos.
+
     Tiene falsos positivos esperables (números de fila, conteos, porcentajes
     derivados de dos columnas): por diseño es una señal de sospecha para
     disparar una única regeneración de la redacción, no un bloqueo automático.
@@ -233,7 +252,7 @@ def check_groundedness(
         candidate_values = percentage_values if match.group("percent") else row_values
 
         if not any(
-            abs(candidate - value) <= tolerance * max(abs(value), 1)
+            _numbers_match(candidate, value, tolerance)
             for candidate in candidates
             for value in candidate_values
         ):
