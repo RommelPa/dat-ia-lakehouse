@@ -1,0 +1,128 @@
+from app.database.databricks import DatabricksExecutor, DatabricksSqlConfig
+
+
+class FakeCursor:
+    def __init__(self, rows=None, description=None, error=None):
+        self.rows = rows or []
+        self.description = description or []
+        self.error = error
+        self.executed_sql = None
+        self.closed = False
+        self.fetchmany_size = None
+
+    def execute(self, sql_text):
+        self.executed_sql = sql_text
+        if self.error:
+            raise self.error
+
+    def fetchmany(self, size):
+        self.fetchmany_size = size
+        return self.rows[:size]
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self):
+        return self._cursor
+
+    def close(self):
+        self.closed = True
+
+
+def build_executor(cursor):
+    captured = {}
+    connection = FakeConnection(cursor)
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return connection
+
+    executor = DatabricksExecutor(
+        DatabricksSqlConfig(
+            server_hostname="workspace.example.databricks.com",
+            http_path="/sql/1.0/warehouses/example",
+        ),
+        connect=fake_connect,
+    )
+    return executor, connection, captured
+
+
+def test_execute_maps_rows_and_uses_gold_namespace():
+    cursor = FakeCursor(
+        rows=[(99_441, "delivered")],
+        description=[("orders",), ("status",)],
+    )
+    executor, connection, captured = build_executor(cursor)
+
+    result = executor.execute(
+        "SELECT COUNT(*) AS orders, 'delivered' AS status",
+        row_limit=10,
+    )
+
+    assert result == {"rows": [{"orders": 99_441, "status": "delivered"}]}
+    assert captured == {
+        "server_hostname": "workspace.example.databricks.com",
+        "http_path": "/sql/1.0/warehouses/example",
+        "auth_type": "databricks-oauth",
+        "catalog": "dat_ia",
+        "schema": "gold",
+    }
+    assert cursor.executed_sql == "SELECT COUNT(*) AS orders, 'delivered' AS status"
+    assert cursor.fetchmany_size == 10
+    assert cursor.closed is True
+    assert connection.closed is True
+
+
+def test_execute_rejects_non_select_without_connecting():
+    calls = 0
+
+    def fake_connect(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("No debe conectar para SQL rechazado")
+
+    executor = DatabricksExecutor(
+        DatabricksSqlConfig(
+            server_hostname="workspace.example.databricks.com",
+            http_path="/sql/1.0/warehouses/example",
+        ),
+        connect=fake_connect,
+    )
+
+    assert executor.execute("DELETE FROM olist_orders_dataset") == {
+        "error": "Solo se permiten sentencias SELECT."
+    }
+    assert calls == 0
+
+
+def test_execute_rejects_multiple_statements():
+    cursor = FakeCursor()
+    executor, _, _ = build_executor(cursor)
+
+    assert executor.execute("SELECT 1; SELECT 2") == {
+        "error": "Solo se permite una sentencia SQL por consulta."
+    }
+
+
+def test_execute_returns_connector_errors_and_closes_resources():
+    cursor = FakeCursor(error=RuntimeError("warehouse unavailable"))
+    executor, connection, _ = build_executor(cursor)
+
+    assert executor.execute("SELECT 1") == {"error": "warehouse unavailable"}
+    assert cursor.closed is True
+    assert connection.closed is True
+
+
+def test_execute_rejects_invalid_row_limit():
+    cursor = FakeCursor()
+    executor, _, _ = build_executor(cursor)
+
+    assert executor.execute("SELECT 1", row_limit=0) == {
+        "error": "row_limit debe ser mayor que cero."
+    }
