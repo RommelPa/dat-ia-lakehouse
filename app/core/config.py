@@ -3,6 +3,9 @@
 Este módulo centraliza las variables de entorno sin cambiar todavía el
 comportamiento de ``app.main``. La migración se hará de forma incremental para
 mantener compatibilidad con los tests y despliegues actuales.
+
+La clase ``Settings`` es la única fuente de configuración nueva que se irá
+adoptando gradualmente durante el refactor estructural.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
