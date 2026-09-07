@@ -156,3 +156,43 @@ def test_check_groundedness_respects_rounding_tolerance() -> None:
     result = check_groundedness(answer, rows, tolerance=0.01)
 
     assert result.ok is True
+
+
+def test_check_groundedness_accepts_dot_as_thousands_separator() -> None:
+    rows = [{"order_count": 99_441}]
+    answer = "El número total de órdenes registradas es 99.441."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_accepts_comma_as_thousands_separator() -> None:
+    rows = [{"order_count": 99_441}]
+    answer = "The total number of orders is 99,441."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_keeps_leading_zero_three_decimals_fractional() -> None:
+    rows = [{"on_time_rate": Decimal("0.960")}]
+    answer = "La tasa fue 0.960."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_does_not_accept_wrong_thousands_interpretation() -> None:
+    rows = [{"order_count": 99_442}]
+    answer = "El número total de órdenes registradas es 99.441."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is False
+    assert result.unsupported_numbers == ["99.441"]
