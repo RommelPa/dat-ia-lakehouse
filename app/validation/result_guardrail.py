@@ -75,6 +75,40 @@ def _parse_answer_number(raw: str) -> float:
     return float(normalized)
 
 
+def _parse_answer_number_candidates(raw: str) -> set[float]:
+    """Devuelve interpretaciones plausibles de un número redactado.
+
+    Un único separador seguido por tres dígitos es ambiguo en texto humano:
+    ``99.441`` puede representar 99.441 o 99 441 según el locale. En vez de
+    imponer una convención global, groundedness prueba ambas interpretaciones
+    y acepta únicamente la que esté respaldada por las filas ejecutadas.
+
+    Los valores que empiezan por cero, como ``0.960``, no generan una
+    interpretación de miles porque representan de forma natural una fracción.
+    """
+    normalized = raw.strip()
+    candidates = {_parse_answer_number(normalized)}
+
+    separators = [separator for separator in (".", ",") if separator in normalized]
+    if len(separators) != 1:
+        return candidates
+
+    separator = separators[0]
+    if normalized.count(separator) != 1:
+        return candidates
+
+    integer_part, trailing_part = normalized.split(separator, 1)
+    if (
+        integer_part != "0"
+        and integer_part.isdigit()
+        and len(trailing_part) == 3
+        and trailing_part.isdigit()
+    ):
+        candidates.add(float(integer_part + trailing_part))
+
+    return candidates
+
+
 def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
     """Obtiene valores crudos y equivalentes porcentuales de las filas."""
     raw_values: set[float] = set()
@@ -170,10 +204,14 @@ def check_groundedness(
     """Verifica que cada número del texto exista entre los valores de las filas.
 
     Extrae números del texto con una regex y los compara contra los
-    valores numéricos de `rows`, con tolerancia de redondeo. Tiene falsos
-    positivos esperables (números de fila, conteos, porcentajes derivados
-    de dos columnas): por diseño es una señal de sospecha para disparar
-    una única regeneración de la redacción, no un bloqueo automático.
+    valores numéricos de `rows`, con tolerancia de redondeo. Los números con
+    un único separador y tres dígitos finales se consideran ambiguos entre
+    decimal y miles; se prueban ambas lecturas y solo se acepta una si está
+    respaldada por los datos ejecutados.
+
+    Tiene falsos positivos esperables (números de fila, conteos, porcentajes
+    derivados de dos columnas): por diseño es una señal de sospecha para
+    disparar una única regeneración de la redacción, no un bloqueo automático.
 
     Args:
         answer: texto redactado por `synthesize_answer`.
@@ -191,11 +229,12 @@ def check_groundedness(
     unsupported = []
     for match in numbers_in_answer:
         raw = match.group("number")
-        candidate = _parse_answer_number(raw)
+        candidates = _parse_answer_number_candidates(raw)
         candidate_values = percentage_values if match.group("percent") else row_values
 
         if not any(
             abs(candidate - value) <= tolerance * max(abs(value), 1)
+            for candidate in candidates
             for value in candidate_values
         ):
             unsupported.append(raw + (" %" if match.group("percent") else ""))
