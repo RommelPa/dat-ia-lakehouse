@@ -16,7 +16,8 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
-from app.db.connect_db import create_db_engine
+from app.core.config import Settings
+from app.database.runtime import QueryRuntime, create_query_runtime
 from app.formatting import format_result_table
 from app.memory.query_memory_v2 import (
     QUERY_MEMORY_V2_DISTANCE_THRESHOLD,
@@ -57,6 +58,8 @@ from transformers import (
 # Configuración
 # ---------------------------------------------------------------------------
 
+SETTINGS = Settings()
+
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 APP_ENV = os.environ.get("APP_ENV", "test")
@@ -87,7 +90,8 @@ query_memory_v2_collection = None
 image_collection = None
 shield_tokenizer = None
 shield_model = None
-sql_database: SQLDatabase = None  # None si DATABASE_URL no está configurada
+sql_database: SQLDatabase = None  # PostgreSQL compatibility and dry-run
+query_runtime: QueryRuntime | None = None
 
 
 def _trace_metadata(
@@ -138,8 +142,7 @@ async def lifespan(app: FastAPI):
     global rag_llm, optimizer_llm, answer_llm, judge_llm, embeddings_model
     global chroma_client, text_collection, image_collection
     global query_memory_v2_collection
-    global shield_tokenizer, shield_model, sql_database
-
+    global shield_tokenizer, shield_model, sql_database, query_runtime
     langsmith_status = langsmith_connection_status()
     print(f"[startup] LangSmith tracing: {langsmith_status}.")
 
@@ -234,24 +237,35 @@ async def lifespan(app: FastAPI):
     )
     # print(f"[startup] ChromaDB: {image_collection.count()} docs en vouchers_financieros.")
 
-    # Inicializar SQLDatabase (LangChain) contra Supabase/Postgres, si está configurada.
-    # Es opcional: si falla o no hay DATABASE_URL, /query/answer queda deshabilitado
-    # pero el resto de la app (generación de SQL sin ejecutar) sigue funcionando.
-    if DATABASE_URL:
+    # Initialize the configured query backend.
+    #
+    # PostgreSQL keeps SQLDatabase for EXPLAIN dry-run validation.
+    # Databricks opens its SQL connection lazily when a query executes.
+    if SETTINGS.query_backend == "postgres" and not DATABASE_URL:
+        query_runtime = None
+        sql_database = None
+        print(
+            "[startup] DATABASE_URL not configured: "
+            "/query/answer cannot execute SQL."
+        )
+    else:
         try:
-            db_engine = create_db_engine(DATABASE_URL)
-            sql_database = SQLDatabase(db_engine, lazy_table_reflection=True)
+            query_runtime = create_query_runtime(SETTINGS)
+            sql_database = query_runtime.validation_db
             print(
-                f"[startup] SQLDatabase conectado (dialecto: {sql_database.dialect})."
+                "[startup] Query backend configured: "
+                f"{query_runtime.name} "
+                f"(dialect: {query_runtime.dialect})."
             )
         except Exception as e:
-            print(f"[startup] ADVERTENCIA: No se pudo conectar a DATABASE_URL: {e}")
-    else:
-        print(
-            "[startup] DATABASE_URL no configurada: /query/answer no podrá ejecutar SQL."
-        )
+            query_runtime = None
+            sql_database = None
+            print(
+                "[startup] WARNING: could not initialize "
+                f"QUERY_BACKEND={SETTINGS.query_backend}: {e}"
+            )
 
-    # Ingesta automática
+    # Automatic ingestion
     if text_collection._collection.count() == 0:
         print(
             "[startup] Colección vacía. Iniciando ingesta automática desde data/ddl.json..."
@@ -1375,7 +1389,11 @@ def generate_validated_sql(
     metadata=_trace_metadata(operation="read_only_sql_execution"),
     tags=_trace_tags(operation="read_only_sql_execution"),
 )
-def execute_sql(db: SQLDatabase, sql: str, row_limit: int = 200) -> dict:
+def execute_sql(
+    db: SQLDatabase | QueryRuntime,
+    sql: str,
+    row_limit: int = 200,
+) -> dict:
     """Ejecuta SQL de solo lectura contra Supabase con guardas de seguridad.
 
     Nunca lanza excepción: devuelve {"rows": [...]} en éxito o
@@ -1383,8 +1401,10 @@ def execute_sql(db: SQLDatabase, sql: str, row_limit: int = 200) -> dict:
     ejecutarse (defensa en profundidad, aunque el rol de BD ya sea de
     solo lectura).
     """
-    stripped = sql.strip().rstrip(";")
+    if isinstance(db, QueryRuntime):
+        return db.execute(sql, row_limit=row_limit)
 
+    stripped = sql.strip().rstrip(";")
     if not re.match(r"(?is)^select\b", stripped):
         return {"error": "Solo se permiten sentencias SELECT."}
 
@@ -1633,14 +1653,39 @@ def health() -> HealthResponse:
 
 @app.get("/ready")
 def ready() -> dict:
+    active_resource = (
+        query_runtime
+        if query_runtime is not None
+        else sql_database
+    )
+
+    if query_runtime is not None:
+        backend = query_runtime.name
+        message = (
+            "Backend configured "
+            f"(dialect: {query_runtime.dialect})."
+        )
+    elif sql_database is not None:
+        backend = "postgres"
+        message = (
+            f"Connected (dialect: {sql_database.dialect})."
+        )
+    else:
+        backend = SETTINGS.query_backend
+        message = (
+            "Query backend is not configured "
+            "or could not be initialized."
+        )
+
     return {
         "status": "ok",
-        "database": "connected" if sql_database is not None else "not_configured",
-        "message": (
-            f"Conectado (dialecto: {sql_database.dialect})."
-            if sql_database is not None
-            else "DATABASE_URL no configurada o la conexión a Supabase falló al arrancar."
+        "database": (
+            "connected"
+            if active_resource is not None
+            else "not_configured"
         ),
+        "backend": backend,
+        "message": message,
         "langsmith": langsmith_connection_status(),
     }
 
@@ -2108,12 +2153,22 @@ async def query_answer(request: QueryRequest):
             retrieval=retrieval_info,
         )
 
-    if sql_database is None:
+    active_query_resource = (
+        query_runtime
+        if query_runtime is not None
+        else sql_database
+    )
+
+    if active_query_resource is None:
         raise HTTPException(
-            503, "La ejecución de SQL no está configurada (DATABASE_URL faltante)."
+            503,
+            "SQL query backend is not configured.",
         )
 
-    execution = execute_sql(sql_database, rag_response.sql)
+    execution = execute_sql(
+        active_query_resource,
+        rag_response.sql,
+    )
 
     if "error" in execution:
         return AnswerResponse(

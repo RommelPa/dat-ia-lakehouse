@@ -2282,3 +2282,104 @@ def test_query_answer_saves_when_retrieved_sql_does_not_match(
     assert saved_record.sql.startswith(
         "SELECT carrier_name"
     )
+
+def test_ready_reports_databricks_query_runtime(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    runtime = SimpleNamespace(
+        name="databricks",
+        dialect="databricks",
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "query_runtime",
+        runtime,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "sql_database",
+        None,
+    )
+
+    response = client.get("/ready")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["database"] == "connected"
+    assert body["backend"] == "databricks"
+    assert "databricks" in body["message"].lower()
+
+
+def test_query_answer_uses_query_runtime_when_available(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    _mock_answer_pipeline(monkeypatch)
+
+    runtime = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        main_module,
+        "query_runtime",
+        runtime,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "sql_database",
+        None,
+    )
+
+    def fake_execute_sql(
+        db,
+        sql,
+        row_limit=200,
+    ):
+        captured["resource"] = db
+        captured["sql"] = sql
+        captured["row_limit"] = row_limit
+
+        return {
+            "rows": [
+                {
+                    "carrier_name": "DHL",
+                    "on_time_rate": 0.97,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        main_module,
+        "execute_sql",
+        fake_execute_sql,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "synthesize_answer",
+        lambda llm, question, sql, rows: (
+            "El transportista con mejor cumplimiento es DHL."
+        ),
+    )
+
+    response = client.post(
+        "/query/answer",
+        json={
+            "question": (
+                "Que empresa de transporte tiene "
+                "mejor cumplimiento?"
+            )
+        },
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "success"
+    assert captured["resource"] is runtime
+    assert captured["sql"].startswith(
+        "SELECT carrier_name FROM carriers"
+    )
