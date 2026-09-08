@@ -3,6 +3,10 @@
 Este benchmark ejecuta los SQL de referencia directamente, sin optimizer,
 retrieval, Gemini ni judge. Su objetivo es aislar la paridad de datos y motor
 antes del benchmark end-to-end del agente Text-to-SQL.
+
+Los casos de seguridad cuyo estado esperado es ``blocked`` no tienen SQL de
+referencia y quedan fuera de este benchmark por diseño. Se reportan como
+``SKIP`` para mantener visible la relación con el golden set completo.
 """
 
 from __future__ import annotations
@@ -239,13 +243,29 @@ def _select_cases(
     return selected
 
 
+def _is_reference_sql_case(case: Mapping[str, Any]) -> bool:
+    """Incluye solo casos analíticos con SQL canónico ejecutable."""
+    reference = case.get("reference_outputs")
+    if not isinstance(reference, Mapping):
+        return False
+    if reference.get("expected_status") != "success":
+        return False
+    return bool(str(reference.get("reference_sql") or "").strip())
+
+
 def _backend_summary(cases: Sequence[Mapping[str, Any]], backend: str) -> dict[str, Any]:
     records = [case[backend] for case in cases if case.get(backend) is not None]
     latencies = [float(record["latency_ms"]) for record in records if record["ok"]]
+    failed_case_ids = [
+        str(case["case_id"])
+        for case in cases
+        if case.get(backend) is not None and not case[backend].get("expected_match")
+    ]
     return {
         "executed": sum(bool(record["ok"]) for record in records),
         "expected_match": sum(bool(record.get("expected_match")) for record in records),
         "errors": sum(not bool(record["ok"]) for record in records),
+        "failed_case_ids": failed_case_ids,
         "avg_latency_ms": round(sum(latencies) / len(latencies), 3) if latencies else None,
         "min_latency_ms": round(min(latencies), 3) if latencies else None,
         "max_latency_ms": round(max(latencies), 3) if latencies else None,
@@ -259,7 +279,16 @@ def benchmark(
     report_path: Path,
     case_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
-    cases = _select_cases(load_golden_set(dataset_path), case_ids)
+    selected_cases = _select_cases(load_golden_set(dataset_path), case_ids)
+    cases = [case for case in selected_cases if _is_reference_sql_case(case)]
+    skipped_cases = [case for case in selected_cases if not _is_reference_sql_case(case)]
+
+    if not cases:
+        raise ValueError("La selección no contiene casos analíticos con SQL de referencia.")
+
+    for case in skipped_cases:
+        print(f"{case['case_id']}: SKIP (sin SQL analítico de referencia)")
+
     run_postgres = backend in {"both", "postgres"}
     run_databricks = backend in {"both", "databricks"}
 
@@ -295,7 +324,8 @@ def benchmark(
                 "question": case["inputs"]["question"],
                 "reference_sql": reference_sql,
                 "databricks_sql": databricks_sql,
-                "sql_changed_for_databricks": reference_sql.rstrip(";") != databricks_sql.rstrip(";"),
+                "sql_changed_for_databricks": reference_sql.rstrip(";")
+                != databricks_sql.rstrip(";"),
                 "postgres": None,
                 "databricks": None,
                 "cross_backend_parity": None,
@@ -353,7 +383,12 @@ def benchmark(
                 )
             print(f"{record['case_id']}: " + " | ".join(status_parts))
 
-    summary: dict[str, Any] = {"total_cases": len(case_results)}
+    summary: dict[str, Any] = {
+        "selected_cases": len(selected_cases),
+        "total_cases": len(case_results),
+        "skipped_cases": len(skipped_cases),
+        "skipped_case_ids": [str(case["case_id"]) for case in skipped_cases],
+    }
     if run_postgres:
         summary["postgres"] = _backend_summary(case_results, "postgres")
     if run_databricks:
@@ -365,8 +400,8 @@ def benchmark(
 
     report = {
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "dataset_version": cases[0]["metadata"]["dataset_version"],
-        "dataset_content_sha256": golden_set_content_hash(cases),
+        "dataset_version": selected_cases[0]["metadata"]["dataset_version"],
+        "dataset_content_sha256": golden_set_content_hash(selected_cases),
         "dataset_path": str(dataset_path),
         "benchmark_type": "reference_sql_backend_parity",
         "backend_scope": backend,
