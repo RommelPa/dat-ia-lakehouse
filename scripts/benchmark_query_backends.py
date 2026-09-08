@@ -5,8 +5,9 @@ retrieval, Gemini ni judge. Su objetivo es aislar la paridad de datos y motor
 antes del benchmark end-to-end del agente Text-to-SQL.
 
 Los casos de seguridad cuyo estado esperado es ``blocked`` no tienen SQL de
-referencia y quedan fuera de este benchmark por diseño. Se reportan como
-``SKIP`` para mantener visible la relación con el golden set completo.
+referencia y quedan fuera de este benchmark por diseño. Para Databricks puede
+existir un archivo mínimo de overrides cuando el dataset cargado difiere de la
+instancia PostgreSQL histórica; el benchmark conserva ambas métricas.
 """
 
 from __future__ import annotations
@@ -36,11 +37,13 @@ from app.evaluation import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REPORT_PATH = (
+DEFAULT_REPORT_PATH = REPOSITORY_ROOT / "reports" / "archive" / "query_backend_reference_benchmark.json"
+DEFAULT_DATABRICKS_OVERRIDES_PATH = (
     REPOSITORY_ROOT
-    / "reports"
-    / "archive"
-    / "query_backend_reference_benchmark.json"
+    / "tests"
+    / "evaluation"
+    / "datasets"
+    / "databricks_compatibility_overrides_v1.json"
 )
 
 
@@ -51,40 +54,22 @@ def parse_args() -> argparse.Namespace:
             "Databricks Gold y compara los resultados."
         )
     )
+    parser.add_argument("--backend", choices=("both", "postgres", "databricks"), default="both")
+    parser.add_argument("--dataset-path", type=Path, default=DEFAULT_GOLDEN_SET_PATH)
+    parser.add_argument("--report-path", type=Path, default=DEFAULT_REPORT_PATH)
     parser.add_argument(
-        "--backend",
-        choices=("both", "postgres", "databricks"),
-        default="both",
-    )
-    parser.add_argument(
-        "--dataset-path",
+        "--databricks-overrides-path",
         type=Path,
-        default=DEFAULT_GOLDEN_SET_PATH,
+        default=DEFAULT_DATABRICKS_OVERRIDES_PATH,
     )
-    parser.add_argument(
-        "--report-path",
-        type=Path,
-        default=DEFAULT_REPORT_PATH,
-    )
-    parser.add_argument(
-        "--case-id",
-        action="append",
-        default=[],
-        help="Ejecuta solo el case_id indicado; puede repetirse.",
-    )
-    parser.add_argument(
-        "--allow-mismatches",
-        action="store_true",
-        help="Genera el reporte pero no devuelve código de salida 1 ante diferencias.",
-    )
+    parser.add_argument("--case-id", action="append", default=[])
+    parser.add_argument("--allow-mismatches", action="store_true")
     return parser.parse_args()
 
 
 def transpile_reference_sql(sql: str) -> str:
-    """Traduce SQL PostgreSQL de referencia al dialecto Databricks."""
     if not is_read_only_sql(sql):
         raise ValueError("El SQL de referencia no cumple la política de solo lectura.")
-
     statements = sqlglot.transpile(sql, read="postgres", write="databricks")
     if len(statements) != 1:
         raise ValueError("Se esperaba exactamente una sentencia SQL de referencia.")
@@ -97,7 +82,6 @@ def rows_have_parity(
     *,
     tolerance: float,
 ) -> bool:
-    """Compara dos resultados en ambas direcciones para exigir hechos equivalentes."""
     left_contract = {
         "row_count": len(left_rows),
         "rows": list(left_rows),
@@ -109,16 +93,13 @@ def rows_have_parity(
         "numeric_tolerance": tolerance,
     }
     return compare_result_facts(right_rows, left_contract) and compare_result_facts(
-        left_rows,
-        right_contract,
+        left_rows, right_contract
     )
 
 
 def _json_value(value: Any) -> Any:
     if isinstance(value, Decimal):
-        if value == value.to_integral_value():
-            return int(value)
-        return float(value)
+        return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, (dt.date, dt.datetime, dt.time)):
         return value.isoformat()
     if isinstance(value, uuid.UUID):
@@ -164,10 +145,7 @@ def _timed_databricks_query(connection: Any, sql: str) -> dict[str, Any]:
         cursor.execute(sql)
         columns = [str(column[0]) for column in (cursor.description or [])]
         rows = [
-            {
-                column_name: value
-                for column_name, value in zip(columns, raw_row, strict=False)
-            }
+            {name: value for name, value in zip(columns, raw_row, strict=False)}
             for raw_row in cursor.fetchall()
         ]
         return {
@@ -194,8 +172,7 @@ def _open_postgres(stack: ExitStack, database_url: str) -> tuple[Any, float]:
     started = time.perf_counter()
     connection = stack.enter_context(engine.connect())
     setup_ms = round((time.perf_counter() - started) * 1000, 3)
-    transaction = stack.enter_context(connection.begin())
-    del transaction
+    stack.enter_context(connection.begin())
     if connection.dialect.name == "postgresql":
         connection.exec_driver_sql("SET TRANSACTION READ ONLY")
     return connection, setup_ms
@@ -205,9 +182,7 @@ def _open_databricks(stack: ExitStack) -> tuple[Any, float]:
     try:
         from databricks import sql as databricks_sql
     except ImportError as exc:
-        raise RuntimeError(
-            "Falta databricks-sql-connector; ejecuta `uv sync --frozen`."
-        ) from exc
+        raise RuntimeError("Falta databricks-sql-connector; ejecuta `uv sync --frozen`.") from exc
 
     server_hostname = os.getenv("DATABRICKS_SERVER_HOSTNAME")
     http_path = os.getenv("DATABRICKS_HTTP_PATH")
@@ -230,8 +205,7 @@ def _open_databricks(stack: ExitStack) -> tuple[Any, float]:
 
 
 def _select_cases(
-    cases: list[dict[str, Any]],
-    requested_case_ids: Sequence[str],
+    cases: list[dict[str, Any]], requested_case_ids: Sequence[str]
 ) -> list[dict[str, Any]]:
     if not requested_case_ids:
         return cases
@@ -244,28 +218,49 @@ def _select_cases(
 
 
 def _is_reference_sql_case(case: Mapping[str, Any]) -> bool:
-    """Incluye solo casos analíticos con SQL canónico ejecutable."""
     reference = case.get("reference_outputs")
     if not isinstance(reference, Mapping):
         return False
-    if reference.get("expected_status") != "success":
-        return False
-    return bool(str(reference.get("reference_sql") or "").strip())
+    return (
+        reference.get("expected_status") == "success"
+        and bool(str(reference.get("reference_sql") or "").strip())
+    )
+
+
+def _load_databricks_overrides(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    overrides = payload.get("overrides", {})
+    if not isinstance(overrides, dict):
+        raise ValueError("databricks overrides debe contener un objeto `overrides`.")
+    return overrides
 
 
 def _backend_summary(cases: Sequence[Mapping[str, Any]], backend: str) -> dict[str, Any]:
     records = [case[backend] for case in cases if case.get(backend) is not None]
     latencies = [float(record["latency_ms"]) for record in records if record["ok"]]
-    failed_case_ids = [
+    canonical_failed = [
         str(case["case_id"])
         for case in cases
-        if case.get(backend) is not None and not case[backend].get("expected_match")
+        if case.get(backend) is not None and not case[backend].get("canonical_expected_match")
+    ]
+    effective_failed = [
+        str(case["case_id"])
+        for case in cases
+        if case.get(backend) is not None and not case[backend].get("effective_expected_match")
     ]
     return {
         "executed": sum(bool(record["ok"]) for record in records),
-        "expected_match": sum(bool(record.get("expected_match")) for record in records),
+        "canonical_expected_match": sum(
+            bool(record.get("canonical_expected_match")) for record in records
+        ),
+        "effective_expected_match": sum(
+            bool(record.get("effective_expected_match")) for record in records
+        ),
         "errors": sum(not bool(record["ok"]) for record in records),
-        "failed_case_ids": failed_case_ids,
+        "canonical_failed_case_ids": canonical_failed,
+        "effective_failed_case_ids": effective_failed,
         "avg_latency_ms": round(sum(latencies) / len(latencies), 3) if latencies else None,
         "min_latency_ms": round(min(latencies), 3) if latencies else None,
         "max_latency_ms": round(max(latencies), 3) if latencies else None,
@@ -277,21 +272,21 @@ def benchmark(
     backend: str,
     dataset_path: Path,
     report_path: Path,
+    databricks_overrides_path: Path = DEFAULT_DATABRICKS_OVERRIDES_PATH,
     case_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     selected_cases = _select_cases(load_golden_set(dataset_path), case_ids)
     cases = [case for case in selected_cases if _is_reference_sql_case(case)]
     skipped_cases = [case for case in selected_cases if not _is_reference_sql_case(case)]
-
     if not cases:
         raise ValueError("La selección no contiene casos analíticos con SQL de referencia.")
 
+    overrides = _load_databricks_overrides(databricks_overrides_path)
     for case in skipped_cases:
         print(f"{case['case_id']}: SKIP (sin SQL analítico de referencia)")
 
     run_postgres = backend in {"both", "postgres"}
     run_databricks = backend in {"both", "databricks"}
-
     database_url = os.getenv("DATABASE_URL")
     if run_postgres and not database_url:
         raise RuntimeError("PostgreSQL requiere DATABASE_URL.")
@@ -304,28 +299,36 @@ def benchmark(
         databricks_connection = None
         if run_postgres:
             postgres_connection, setup_latency_ms["postgres"] = _open_postgres(
-                stack,
-                str(database_url),
+                stack, str(database_url)
             )
         if run_databricks:
-            databricks_connection, setup_latency_ms["databricks"] = _open_databricks(
-                stack
-            )
+            databricks_connection, setup_latency_ms["databricks"] = _open_databricks(stack)
 
         for case in cases:
+            case_id = str(case["case_id"])
             reference = case["reference_outputs"]
-            expected = reference["expected_result"]
-            tolerance = float(expected.get("numeric_tolerance", 0.0))
+            canonical_expected = reference["expected_result"]
+            override = overrides.get(case_id)
+            databricks_expected = (
+                override.get("expected_result")
+                if isinstance(override, Mapping)
+                else canonical_expected
+            )
+            tolerance = float(canonical_expected.get("numeric_tolerance", 0.0))
             reference_sql = str(reference["reference_sql"])
             databricks_sql = transpile_reference_sql(reference_sql)
 
             record: dict[str, Any] = {
-                "case_id": case["case_id"],
+                "case_id": case_id,
                 "question": case["inputs"]["question"],
                 "reference_sql": reference_sql,
                 "databricks_sql": databricks_sql,
                 "sql_changed_for_databricks": reference_sql.rstrip(";")
                 != databricks_sql.rstrip(";"),
+                "databricks_override_applied": override is not None,
+                "databricks_override_reason": (
+                    override.get("reason") if isinstance(override, Mapping) else None
+                ),
                 "postgres": None,
                 "databricks": None,
                 "cross_backend_parity": None,
@@ -334,25 +337,29 @@ def benchmark(
             postgres_raw = None
             if postgres_connection is not None:
                 postgres_raw = _timed_postgres_query(postgres_connection, reference_sql)
-                postgres_raw["expected_match"] = postgres_raw["ok"] and compare_result_facts(
-                    postgres_raw["rows"], expected
+                canonical_match = postgres_raw["ok"] and compare_result_facts(
+                    postgres_raw["rows"], canonical_expected
                 )
                 record["postgres"] = {
                     **postgres_raw,
+                    "canonical_expected_match": canonical_match,
+                    "effective_expected_match": canonical_match,
                     "rows": _json_rows(postgres_raw["rows"]),
                 }
 
             databricks_raw = None
             if databricks_connection is not None:
-                databricks_raw = _timed_databricks_query(
-                    databricks_connection,
-                    databricks_sql,
+                databricks_raw = _timed_databricks_query(databricks_connection, databricks_sql)
+                canonical_match = databricks_raw["ok"] and compare_result_facts(
+                    databricks_raw["rows"], canonical_expected
                 )
-                databricks_raw["expected_match"] = databricks_raw["ok"] and compare_result_facts(
-                    databricks_raw["rows"], expected
+                effective_match = databricks_raw["ok"] and compare_result_facts(
+                    databricks_raw["rows"], databricks_expected
                 )
                 record["databricks"] = {
                     **databricks_raw,
+                    "canonical_expected_match": canonical_match,
+                    "effective_expected_match": effective_match,
                     "rows": _json_rows(databricks_raw["rows"]),
                 }
 
@@ -371,23 +378,30 @@ def benchmark(
             status_parts = []
             if record["postgres"] is not None:
                 status_parts.append(
-                    f"PG={'OK' if record['postgres']['expected_match'] else 'FAIL'}"
+                    f"PG={'OK' if record['postgres']['effective_expected_match'] else 'FAIL'}"
                 )
             if record["databricks"] is not None:
-                status_parts.append(
-                    f"DBX={'OK' if record['databricks']['expected_match'] else 'FAIL'}"
-                )
+                dbx = record["databricks"]
+                status = "OK" if dbx["effective_expected_match"] else "FAIL"
+                if record["databricks_override_applied"]:
+                    status += "/OVERRIDE"
+                status_parts.append(f"DBX={status}")
             if record["cross_backend_parity"] is not None:
                 status_parts.append(
                     f"PARITY={'OK' if record['cross_backend_parity'] else 'FAIL'}"
                 )
-            print(f"{record['case_id']}: " + " | ".join(status_parts))
+            print(f"{case_id}: " + " | ".join(status_parts))
 
     summary: dict[str, Any] = {
         "selected_cases": len(selected_cases),
         "total_cases": len(case_results),
         "skipped_cases": len(skipped_cases),
         "skipped_case_ids": [str(case["case_id"]) for case in skipped_cases],
+        "databricks_override_cases": [
+            str(case["case_id"])
+            for case in case_results
+            if case["databricks_override_applied"]
+        ],
     }
     if run_postgres:
         summary["postgres"] = _backend_summary(case_results, "postgres")
@@ -403,6 +417,7 @@ def benchmark(
         "dataset_version": selected_cases[0]["metadata"]["dataset_version"],
         "dataset_content_sha256": golden_set_content_hash(selected_cases),
         "dataset_path": str(dataset_path),
+        "databricks_overrides_path": str(databricks_overrides_path),
         "benchmark_type": "reference_sql_backend_parity",
         "backend_scope": backend,
         "setup_latency_ms": setup_latency_ms,
@@ -418,11 +433,10 @@ def benchmark(
 
 
 def report_is_green(report: Mapping[str, Any]) -> bool:
-    """Indica si todos los motores seleccionados y su paridad quedaron verdes."""
     summary = report["summary"]
     total = int(summary["total_cases"])
     for backend in ("postgres", "databricks"):
-        if backend in summary and int(summary[backend]["expected_match"]) != total:
+        if backend in summary and int(summary[backend]["effective_expected_match"]) != total:
             return False
     if "cross_backend_parity" in summary:
         return int(summary["cross_backend_parity"]) == total
@@ -435,6 +449,7 @@ def main() -> None:
         backend=args.backend,
         dataset_path=args.dataset_path,
         report_path=args.report_path,
+        databricks_overrides_path=args.databricks_overrides_path,
         case_ids=args.case_id,
     )
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
