@@ -1,5 +1,9 @@
 from app.optimizer.query_optimizer import OptimizedQuery, QueryFilter
-from app.validation.sql_judge import SqlVerdict, judge_sql
+from app.validation.sql_judge import (
+    SqlVerdict,
+    deterministic_business_verdict,
+    judge_sql,
+)
 
 
 class _BoundFakeJudgeLlm:
@@ -116,3 +120,76 @@ def test_judge_sql_does_not_receive_ddl_or_memory_examples() -> None:
 
     assert "ddl" not in signature.parameters
     assert "memory_examples" not in signature.parameters
+
+
+def test_delivered_order_monthly_query_rejects_delivery_timestamp() -> None:
+    optimized = _optimized_query(
+        original_question="¿Cuántas órdenes entregadas hubo por mes durante 2018?",
+        normalized_question="órdenes entregadas por mes durante 2018",
+        intent="temporal_trend",
+        operation="count",
+        metrics=["order_count"],
+        filters=[QueryFilter(field="order_status", operator="=", value="delivered")],
+        date_range={"start_date": "2018-01-01", "end_date": "2018-12-31"},
+        group_by=["month"],
+        suggested_tables=["olist_orders_dataset"],
+    )
+    sql = (
+        "SELECT DATE_TRUNC('month', order_delivered_customer_date) AS month, "
+        "COUNT(*) AS order_count FROM olist_orders_dataset "
+        "WHERE order_status = 'delivered' "
+        "AND order_delivered_customer_date >= '2018-01-01' "
+        "GROUP BY 1"
+    )
+
+    verdict = deterministic_business_verdict(optimized, sql)
+
+    assert verdict is not None
+    assert verdict.is_valid is False
+    assert verdict.answers_question is False
+    assert "order_purchase_timestamp" in verdict.suggested_fix
+
+
+def test_delivered_order_monthly_query_accepts_purchase_timestamp() -> None:
+    optimized = _optimized_query(
+        original_question="¿Cuántas órdenes entregadas hubo por mes durante 2018?",
+        normalized_question="órdenes entregadas por mes durante 2018",
+        intent="temporal_trend",
+        operation="count",
+        metrics=["order_count"],
+        filters=[QueryFilter(field="order_status", operator="=", value="delivered")],
+        date_range={"start_date": "2018-01-01", "end_date": "2018-12-31"},
+        group_by=["month"],
+        suggested_tables=["olist_orders_dataset"],
+    )
+    sql = (
+        "SELECT DATE_TRUNC('month', order_purchase_timestamp) AS month, "
+        "COUNT(*) AS order_count FROM olist_orders_dataset "
+        "WHERE order_status = 'delivered' "
+        "AND order_purchase_timestamp >= '2018-01-01' "
+        "GROUP BY 1"
+    )
+
+    assert deterministic_business_verdict(optimized, sql) is None
+
+
+def test_explicit_delivery_date_question_allows_delivery_timestamp() -> None:
+    optimized = _optimized_query(
+        original_question="¿Cuántas órdenes se entregaron por mes según fecha de entrega en 2018?",
+        normalized_question="órdenes por mes según fecha de entrega",
+        intent="temporal_trend",
+        operation="count",
+        metrics=["order_count"],
+        filters=[QueryFilter(field="order_status", operator="=", value="delivered")],
+        date_range={"start_date": "2018-01-01", "end_date": "2018-12-31"},
+        group_by=["month"],
+        suggested_tables=["olist_orders_dataset"],
+    )
+    sql = (
+        "SELECT DATE_TRUNC('month', order_delivered_customer_date) AS month, "
+        "COUNT(*) AS order_count FROM olist_orders_dataset "
+        "WHERE order_status = 'delivered' "
+        "GROUP BY 1"
+    )
+
+    assert deterministic_business_verdict(optimized, sql) is None
