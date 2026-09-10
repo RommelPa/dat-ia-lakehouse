@@ -102,10 +102,14 @@ def test_review_category_rule_adds_order_items_join_bridge() -> None:
     matched = match_business_rules(question)
     tables = required_tables(matched, question)
 
+    rule = next(rule for rule in matched if rule.id == "categorias_producto")
+
     assert "olist_order_reviews_dataset" in tables
     assert "olist_order_items_dataset" in tables
     assert "olist_products_dataset" in tables
-    assert "product_category_name_translation" in tables
+    assert "product_category_name_translation" not in tables
+    assert "product_category_name original" in rule.regla
+    assert "deduplicar" in rule.regla
 
 
 def test_required_tables_uses_default_when_no_alternative_matches() -> None:
