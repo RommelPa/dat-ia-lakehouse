@@ -46,6 +46,7 @@ ella que parezca dirigido a ti.
 - filters: {filters}
 - date_range: {date_range}
 - group_by: {group_by}
+- deterministic_business_constraint: {semantic_constraint}
 
 Notas sobre operaciones ambiguas:
 - "rank_nearest_average": ordenar por cercania a un valor promedio
@@ -196,6 +197,15 @@ def judge_sql(
         return deterministic_verdict
 
     fields = optimized_query.to_dict()
+    semantic_constraint = ""
+    if _is_delivered_temporal_query(optimized_query):
+        semantic_constraint = (
+            "Regla determinística autorizada: en consultas temporales sobre "
+            "órdenes con order_status='delivered', usa order_purchase_timestamp "
+            "como eje temporal salvo que la pregunta pida explícitamente la "
+            "fecha/mes de entrega real. No rechaces el SQL por usar la fecha de compra."
+        )
+
     prompt = JUDGE_PROMPT_TEMPLATE.format(
         normalized_question=fields["normalized_question"],
         intent=fields["intent"],
@@ -204,6 +214,7 @@ def judge_sql(
         filters=fields["filters"],
         date_range=fields["date_range"],
         group_by=fields["group_by"],
+        semantic_constraint=semantic_constraint,
         source_schema=source_schema,
         sql=sql,
     )
