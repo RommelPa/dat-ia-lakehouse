@@ -18,6 +18,22 @@
     "regla": "\"Entregado\" es una condición sobre la orden: order_status = 'delivered' en olist_orders_dataset. Aunque la pregunta hable de transportistas, categorías o vendedores, hay que unir con la tabla de órdenes para aplicar el filtro."
   },
   {
+    "id": "agrupacion_mensual",
+    "activacion": ["por mes", "mensual", "cada mes", "mes a mes"],
+    "excluir": [],
+    "tablas_requeridas": [],
+    "tablas_alternativas": {},
+    "regla": "Cuando una consulta agrupe un timestamp por mes, preservar año y mes y usar una expresión portable entre PostgreSQL y Databricks, preferentemente DATE_TRUNC('month', columna_timestamp) AS month. No usar strftime, porque es una función de SQLite y no existe en Databricks SQL."
+  },
+  {
+    "id": "distribucion_resenas_por_calificacion",
+    "activacion": ["para cada calificacion", "por calificacion", "cada calificacion"],
+    "excluir": [],
+    "tablas_requeridas": ["olist_order_reviews_dataset"],
+    "tablas_alternativas": {},
+    "regla": "Cuando se pidan cantidades de reseñas por calificación, review_score es la dimensión de agrupación, no el alias de la agregación. Usar GROUP BY review_score y un alias distinto para el conteo, por ejemplo COUNT(*) AS reviews. Nunca usar COUNT(*) AS review_score."
+  },
+  {
     "id": "categorias_producto",
     "activacion": ["categoria", "categorias"],
     "excluir": ["ticket", "tickets", "soporte", "reclamo", "reclamos"],
