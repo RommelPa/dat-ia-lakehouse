@@ -15,7 +15,7 @@
     "excluir": [],
     "tablas_requeridas": ["olist_orders_dataset"],
     "tablas_alternativas": {},
-    "regla": "\"Entregado\" es una condición sobre la orden: order_status = 'delivered' en olist_orders_dataset. Aunque la pregunta hable de transportistas, categorías o vendedores, hay que unir con la tabla de órdenes para aplicar el filtro."
+    "regla": "\"Entregado\" es una condición sobre la orden: order_status = 'delivered' en olist_orders_dataset. Aunque la pregunta hable de transportistas, categorías o vendedores, hay que unir con la tabla de órdenes para aplicar el filtro. Para conteos de órdenes entregadas por mes o durante un periodo, el agrupamiento y el filtro temporal se basan en order_purchase_timestamp. order_delivered_customer_date corresponde únicamente a preguntas que mencionen de forma explícita la fecha o periodo de entrega efectiva al cliente."
   },
   {
     "id": "agrupacion_mensual",
@@ -43,15 +43,7 @@
   },
   {
     "id": "compradores_unicos",
-    "activacion": [
-      "comprador",
-      "compradores",
-      "cliente unico",
-      "clientes unicos",
-      "recurrente",
-      "recurrentes",
-      "recompra"
-    ],
+    "activacion": ["comprador", "compradores", "cliente unico", "clientes unicos", "recurrente", "recurrentes", "recompra"],
     "excluir": [],
     "tablas_requeridas": ["olist_customers_dataset"],
     "tablas_alternativas": {},
