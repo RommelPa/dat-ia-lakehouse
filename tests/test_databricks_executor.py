@@ -126,3 +126,22 @@ def test_execute_rejects_invalid_row_limit():
     assert executor.execute("SELECT 1", row_limit=0) == {
         "error": "row_limit debe ser mayor que cero."
     }
+
+
+def test_execute_accepts_read_only_cte() -> None:
+    cursor = FakeCursor(
+        rows=[("books", 4.5)],
+        description=[("category",), ("score",)],
+    )
+    executor, connection, _ = build_executor(cursor)
+
+    sql = (
+        "WITH ranked AS (SELECT 'books' AS category, 4.5 AS score) "
+        "SELECT category, score FROM ranked"
+    )
+    result = executor.execute(sql)
+
+    assert result == {"rows": [{"category": "books", "score": 4.5}]}
+    assert cursor.executed_sql == sql
+    assert cursor.closed is True
+    assert connection.closed is True
