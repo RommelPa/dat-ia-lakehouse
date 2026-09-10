@@ -23,12 +23,12 @@ _SQL_MUTATION_PATTERNS = (
 )
 _SPANISH_MUTATION_PATTERNS = (
     r"\binserta(?:r)?\b.{0,80}\ben\s+la\s+tabla\b",
-    r"\bcambia(?:r)?\b.{0,80}\btodas?\s+las?\b",
+    r"\bcambi(?:a|ar|e|es)\b.{0,80}\btodas?\s+las?\b",
     r"\bborra(?:r)?\b.{0,80}\b(?:tabla|registros?|ventas?)\b",
     r"\belimina(?:r)?\b.{0,80}\b(?:tabla|registros?|ventas?)\b",
 )
 _PROMPT_INJECTION_PATTERNS = (
-    r"\bignora(?:r)?\b.{0,80}\binstrucciones?\b",
+    r"\bignor(?:a|ar|e|es|en)\b.{0,80}\binstrucciones?\b",
     r"\bignore\b.{0,80}\binstructions?\b",
 )
 
