@@ -44,7 +44,8 @@ from app.validation.result_guardrail import (
     check_groundedness,
     check_result,
 )
-from app.validation.sql_judge import SqlVerdict, judge_sql
+from app.validation.input_guard import should_block_input
+from app.validation.sql_judge import SqlVerdict, judge_sql, normalize_business_sql
 from app.validation.sql_validator import SqlValidation, validate_sql
 
 import torch
@@ -1358,6 +1359,15 @@ def generate_validated_sql(
         if rag_response.sources == "":
             return rag_response, None, attempt
 
+        normalized_sql = normalize_business_sql(
+            optimized_query,
+            rag_response.sql,
+        )
+        if normalized_sql != rag_response.sql:
+            rag_response = rag_response.model_copy(
+                update={"sql": normalized_sql}
+            )
+
         validation = validate_sql_stage(rag_response.sql, allowed_tables, db=db)
         if not validation.is_valid:
             feedback = SqlVerdict(
@@ -2025,7 +2035,7 @@ async def query_answer(request: QueryRequest):
     label, score = classify_shield(request.question)
     shield_info = ShieldInfo(label=label, score=score)
 
-    if label == "MALICIOUS":
+    if should_block_input(request.question, label, score):
         return AnswerResponse(
             answer=(
                 "Esta consulta fue bloqueada por el filtro de seguridad "
