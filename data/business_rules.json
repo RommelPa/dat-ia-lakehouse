@@ -38,8 +38,15 @@
     "activacion": ["categoria", "categorias"],
     "excluir": ["ticket", "tickets", "soporte", "reclamo", "reclamos"],
     "tablas_requeridas": ["olist_products_dataset", "product_category_name_translation"],
-    "tablas_alternativas": {},
-    "regla": "Las categorías de producto se devuelven en inglés cuando exista traducción, usando product_category_name_english y conservando el nombre en portugués como fallback."
+    "tablas_alternativas": {
+      "resena|resenas|calificacion|calificaciones|review": [
+        "olist_order_reviews_dataset",
+        "olist_order_items_dataset",
+        "olist_products_dataset",
+        "product_category_name_translation"
+      ]
+    },
+    "regla": "Las categorías de producto se devuelven en inglés cuando exista traducción, usando product_category_name_english y conservando el nombre en portugués como fallback. Cuando una pregunta combine categorías con reseñas o calificaciones, recuperar también olist_order_items_dataset como puente entre order_id y product_id."
   },
   {
     "id": "compradores_unicos",
