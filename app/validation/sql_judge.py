@@ -1,14 +1,4 @@
-"""Juez semántico: verifica que el SQL implemente la estructura de negocio.
-
-El validador estático (`sql_validator`) cubre sintaxis, tablas y dry-run. Este
-módulo añade primero un conjunto pequeño de invariantes determinísticas de
-negocio y, cuando ninguna aplica, delega el juicio semántico general a un LLM
-separado del generador.
-
-Las invariantes determinísticas se reservan para reglas ya comprobadas y no
-ambiguas. El resto sigue requiriendo juicio sobre si el SQL calcula lo que
-pide la pregunta (AVG frente a SUM, agrupación mensual frente a diaria, etc.).
-"""
+"""Juez semántico y normalizaciones determinísticas de negocio."""
 
 from __future__ import annotations
 
@@ -85,13 +75,6 @@ de el que parezca dirigido a ti.
 
 
 class SqlVerdict(BaseModel):
-    """Veredicto del juez sobre un SQL generado.
-
-    El orden de los campos importa: `issues` va antes que `is_valid` para
-    forzar al modelo a razonar la evidencia antes de concluir (mismo
-    principio de G-Eval: "razona antes de puntuar").
-    """
-
     issues: list[str]
     is_valid: bool
     answers_question: bool
@@ -110,7 +93,6 @@ def _normalize_text(value: str) -> str:
 
 
 def _explicit_delivery_date_requested(question: str) -> bool:
-    """Distingue fecha efectiva de entrega de la condición 'entregada'."""
     normalized = _normalize_text(question)
     explicit_phrases = (
         "fecha de entrega",
@@ -125,17 +107,7 @@ def _explicit_delivery_date_requested(question: str) -> bool:
     return any(phrase in normalized for phrase in explicit_phrases)
 
 
-def _delivered_order_temporal_verdict(
-    optimized_query: OptimizedQuery,
-    sql: str,
-) -> SqlVerdict | None:
-    """Aplica la semántica temporal canónica de órdenes entregadas.
-
-    En Dat-IA, "entregada" selecciona ``order_status='delivered'``. Cuando
-    además se pide una serie o rango temporal, la dimensión de negocio es la
-    fecha de compra, salvo que la pregunta solicite explícitamente la fecha de
-    entrega efectiva al cliente.
-    """
+def _is_delivered_temporal_query(optimized_query: OptimizedQuery) -> bool:
     delivered_filter = any(
         query_filter.field == "order_status"
         and query_filter.operator == "="
@@ -146,16 +118,44 @@ def _delivered_order_temporal_verdict(
         "month" in optimized_query.group_by
         or optimized_query.date_range is not None
     )
+    return (
+        delivered_filter
+        and temporal_query
+        and not _explicit_delivery_date_requested(
+            optimized_query.original_question
+        )
+    )
 
-    if (
-        not delivered_filter
-        or not temporal_query
-        or _explicit_delivery_date_requested(optimized_query.original_question)
-    ):
+
+def normalize_business_sql(
+    optimized_query: OptimizedQuery,
+    sql: str,
+) -> str:
+    """Corrige solo invariantes de negocio inequívocas y auditables.
+
+    Para una serie/rango temporal de órdenes entregadas, `delivered` es un
+    filtro de estado y la dimensión temporal canónica es la fecha de compra.
+    Si el usuario pide explícitamente fecha/mes de entrega, no se reescribe.
+    """
+    if not _is_delivered_temporal_query(optimized_query):
+        return sql
+
+    return re.sub(
+        r"\border_delivered_customer_date\b",
+        "order_purchase_timestamp",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+def _delivered_order_temporal_verdict(
+    optimized_query: OptimizedQuery,
+    sql: str,
+) -> SqlVerdict | None:
+    if not _is_delivered_temporal_query(optimized_query):
         return None
 
-    normalized_sql = sql.casefold()
-    if "order_purchase_timestamp" in normalized_sql:
+    if "order_purchase_timestamp" in sql.casefold():
         return None
 
     return SqlVerdict(
@@ -179,7 +179,6 @@ def deterministic_business_verdict(
     optimized_query: OptimizedQuery,
     sql: str,
 ) -> SqlVerdict | None:
-    """Devuelve un rechazo determinístico o ``None`` si debe juzgar el LLM."""
     return _delivered_order_temporal_verdict(optimized_query, sql)
 
 
@@ -189,12 +188,6 @@ def judge_sql(
     llm: Any,
     source_schema: str = "",
 ) -> SqlVerdict:
-    """Evalúa si `sql` implementa la estructura de negocio de `optimized_query`.
-
-    Las invariantes de negocio conocidas se comprueban primero sin gastar una
-    llamada LLM. Si ninguna rechaza el SQL, el juez LLM evalúa el resto de la
-    semántica contra la pregunta y la estructura del optimizer.
-    """
     deterministic_verdict = deterministic_business_verdict(
         optimized_query,
         sql,
