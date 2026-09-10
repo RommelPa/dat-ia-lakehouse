@@ -94,6 +94,20 @@ def test_review_distribution_rule_separates_dimension_and_count_alias() -> None:
     assert "olist_order_reviews_dataset" in tables
 
 
+def test_review_category_rule_adds_order_items_join_bridge() -> None:
+    question = (
+        "¿Cuáles son las 5 categorías con mejor calificación promedio, "
+        "considerando al menos 100 reseñas?"
+    )
+    matched = match_business_rules(question)
+    tables = required_tables(matched, question)
+
+    assert "olist_order_reviews_dataset" in tables
+    assert "olist_order_items_dataset" in tables
+    assert "olist_products_dataset" in tables
+    assert "product_category_name_translation" in tables
+
+
 def test_required_tables_uses_default_when_no_alternative_matches() -> None:
     matched = match_business_rules("¿Cuáles son los 5 estados con más órdenes?")
     tables = required_tables(matched, "¿Cuáles son los 5 estados con más órdenes?")
