@@ -1129,8 +1129,9 @@ def test_query_json_uses_normalized_for_retrieval_and_original_for_generation(
         collection,
         query: str,
         distance_threshold: float = 0.9,
+        excluded_tables: list[str] | None = None,
     ):
-        _ = collection
+        _ = collection, excluded_tables
         captured["retrieval_query"] = query
         captured["distance_threshold"] = distance_threshold
 
@@ -1219,8 +1220,9 @@ def _mock_query_json_memory_pipeline(
         collection,
         query: str,
         distance_threshold: float = 0.7,
+        excluded_tables: list[str] | None = None,
     ):
-        _ = collection, query, distance_threshold
+        _ = collection, query, distance_threshold, excluded_tables
         return main_module.EmbeddingsResponse(
             tabla=["carriers"],
             descripcion=[
@@ -1553,8 +1555,13 @@ class FakeSqlDatabase:
 def _mock_answer_pipeline(monkeypatch, *, shield_label: str = "SAFE"):
     from app import main as main_module
 
-    def fake_query_embeddings(collection, query: str, distance_threshold: float = 0.9):
-        _ = collection, distance_threshold
+    def fake_query_embeddings(
+        collection,
+        query: str,
+        distance_threshold: float = 0.9,
+        excluded_tables: list[str] | None = None,
+    ):
+        _ = collection, distance_threshold, excluded_tables
         return main_module.EmbeddingsResponse(
             tabla=["carriers"],
             descripcion=["Transportistas y tasa de cumplimiento."],
@@ -2119,8 +2126,13 @@ def test_query_answer_returns_no_context_status_when_no_table_found(
 
     _mock_answer_pipeline(monkeypatch)
 
-    def fake_query_embeddings(collection, query: str, distance_threshold: float = 0.7):
-        _ = collection, query, distance_threshold
+    def fake_query_embeddings(
+        collection,
+        query: str,
+        distance_threshold: float = 0.7,
+        excluded_tables: list[str] | None = None,
+    ):
+        _ = collection, query, distance_threshold, excluded_tables
         return main_module.EmbeddingsResponse(
             tabla=[],
             descripcion=[],
