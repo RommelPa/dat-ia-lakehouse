@@ -1,25 +1,49 @@
 [
   {
     "id": "geografia_estado",
-    "activacion": ["estado", "estados", "uf"],
-    "excluir": ["estado de la orden", "order_status", "estado del pedido"],
-    "tablas_requeridas": ["olist_customers_dataset"],
+    "activacion": [
+      "estado",
+      "estados",
+      "uf"
+    ],
+    "excluir": [
+      "estado de la orden",
+      "order_status",
+      "estado del pedido"
+    ],
+    "tablas_requeridas": [
+      "olist_customers_dataset"
+    ],
     "tablas_alternativas": {
-      "vendedor|vendedores|seller": ["olist_sellers_dataset"]
+      "vendedor|vendedores|seller": [
+        "olist_sellers_dataset"
+      ]
     },
     "regla": "Cuando la pregunta hable de \"estados\" sin indicar de quién, se refiere al estado del cliente (customer_state). Si menciona vendedores, corresponde seller_state."
   },
   {
     "id": "ordenes_entregadas",
-    "activacion": ["entregada", "entregadas", "entregado", "entregados"],
+    "activacion": [
+      "entregada",
+      "entregadas",
+      "entregado",
+      "entregados"
+    ],
     "excluir": [],
-    "tablas_requeridas": ["olist_orders_dataset"],
+    "tablas_requeridas": [
+      "olist_orders_dataset"
+    ],
     "tablas_alternativas": {},
     "regla": "\"Entregado\" es una condición sobre la orden: order_status = 'delivered' en olist_orders_dataset. Aunque la pregunta hable de transportistas, categorías o vendedores, hay que unir con la tabla de órdenes para aplicar el filtro. Para conteos de órdenes entregadas por mes o durante un periodo, el agrupamiento y el filtro temporal se basan en order_purchase_timestamp. order_delivered_customer_date corresponde únicamente a preguntas que mencionen de forma explícita la fecha o periodo de entrega efectiva al cliente."
   },
   {
     "id": "agrupacion_mensual",
-    "activacion": ["por mes", "mensual", "cada mes", "mes a mes"],
+    "activacion": [
+      "por mes",
+      "mensual",
+      "cada mes",
+      "mes a mes"
+    ],
     "excluir": [],
     "tablas_requeridas": [],
     "tablas_alternativas": {},
@@ -27,32 +51,59 @@
   },
   {
     "id": "distribucion_resenas_por_calificacion",
-    "activacion": ["para cada calificacion", "por calificacion", "cada calificacion"],
+    "activacion": [
+      "para cada calificacion",
+      "por calificacion",
+      "cada calificacion"
+    ],
     "excluir": [],
-    "tablas_requeridas": ["olist_order_reviews_dataset"],
+    "tablas_requeridas": [
+      "olist_order_reviews_dataset"
+    ],
     "tablas_alternativas": {},
     "regla": "Cuando se pidan cantidades de reseñas por calificación, review_score es la dimensión de agrupación, no el alias de la agregación. Usar GROUP BY review_score y un alias distinto para el conteo, por ejemplo COUNT(*) AS reviews. Nunca usar COUNT(*) AS review_score."
   },
   {
     "id": "categorias_producto",
-    "activacion": ["categoria", "categorias"],
-    "excluir": ["ticket", "tickets", "soporte", "reclamo", "reclamos"],
-    "tablas_requeridas": ["olist_products_dataset", "product_category_name_translation"],
+    "activacion": [
+      "categoria",
+      "categorias"
+    ],
+    "excluir": [
+      "ticket",
+      "tickets",
+      "soporte",
+      "reclamo",
+      "reclamos"
+    ],
+    "tablas_requeridas": [
+      "olist_products_dataset",
+      "product_category_name_translation"
+    ],
     "tablas_alternativas": {
       "resena|resenas|calificacion|calificaciones|review": [
         "olist_order_reviews_dataset",
         "olist_order_items_dataset",
-        "olist_products_dataset",
-        "product_category_name_translation"
+        "olist_products_dataset"
       ]
     },
-    "regla": "Las categorías de producto se devuelven en inglés cuando exista traducción, usando product_category_name_english y conservando el nombre en portugués como fallback. Cuando una pregunta combine categorías con reseñas o calificaciones, recuperar también olist_order_items_dataset como puente entre order_id y product_id."
+    "regla": "Las categorías de producto se devuelven en inglés cuando exista traducción, salvo en análisis que combinen categorías con reseñas o calificaciones. En ese caso conservar product_category_name original, sin traducir; usar olist_order_items_dataset como puente entre order_id y product_id; deduplicar primero cada combinación order_id-categoría y luego unir con olist_order_reviews_dataset para calcular el promedio y el umbral mínimo de reseñas."
   },
   {
     "id": "compradores_unicos",
-    "activacion": ["comprador", "compradores", "cliente unico", "clientes unicos", "recurrente", "recurrentes", "recompra"],
+    "activacion": [
+      "comprador",
+      "compradores",
+      "cliente unico",
+      "clientes unicos",
+      "recurrente",
+      "recurrentes",
+      "recompra"
+    ],
     "excluir": [],
-    "tablas_requeridas": ["olist_customers_dataset"],
+    "tablas_requeridas": [
+      "olist_customers_dataset"
+    ],
     "tablas_alternativas": {},
     "regla": "Un comprador único se identifica por customer_unique_id, no por customer_id. Toda pregunta sobre compradores únicos, recurrencia o recompra necesita olist_customers_dataset."
   }
