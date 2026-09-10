@@ -1,18 +1,19 @@
-"""Juez LLM: verifica que el SQL generado implemente la estructura de negocio.
+"""Juez semántico: verifica que el SQL implemente la estructura de negocio.
 
-A diferencia de `sql_validator` (sintaxis, tablas, LIMIT, dry-run), este módulo
-no puede resolverse de forma determinística: requiere juicio sobre si el SQL
-realmente calcula lo que pide la pregunta (ej. AVG en vez de SUM, GROUP BY
-mensual en vez de diario). Verificar es más barato que generar, así que se usa
-un LLM aparte del generador (`rag_llm`), con salida estructurada y una rúbrica
-cerrada contra `OptimizedQuery` en vez de "¿está bien este SQL?" en abstracto.
+El validador estático (`sql_validator`) cubre sintaxis, tablas y dry-run. Este
+módulo añade primero un conjunto pequeño de invariantes determinísticas de
+negocio y, cuando ninguna aplica, delega el juicio semántico general a un LLM
+separado del generador.
 
-No revisa existencia de tablas/columnas: eso ya lo cubre `sql_validator`, que
-corre antes en el pipeline y es mucho más barato.
+Las invariantes determinísticas se reservan para reglas ya comprobadas y no
+ambiguas. El resto sigue requiriendo juicio sobre si el SQL calcula lo que
+pide la pregunta (AVG frente a SUM, agrupación mensual frente a diaria, etc.).
 """
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from pydantic import BaseModel
@@ -98,25 +99,109 @@ class SqlVerdict(BaseModel):
     confidence: float
 
 
-def judge_sql(optimized_query: OptimizedQuery, sql: str, llm: Any, source_schema: str = "",) -> SqlVerdict:
+def _normalize_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    without_accents = "".join(
+        character
+        for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    return re.sub(r"\s+", " ", without_accents).strip()
+
+
+def _explicit_delivery_date_requested(question: str) -> bool:
+    """Distingue fecha efectiva de entrega de la condición 'entregada'."""
+    normalized = _normalize_text(question)
+    explicit_phrases = (
+        "fecha de entrega",
+        "fecha real de entrega",
+        "fecha efectiva de entrega",
+        "periodo de entrega",
+        "periodo real de entrega",
+        "mes de entrega",
+        "entrega efectiva",
+        "entrega real",
+    )
+    return any(phrase in normalized for phrase in explicit_phrases)
+
+
+def _delivered_order_temporal_verdict(
+    optimized_query: OptimizedQuery,
+    sql: str,
+) -> SqlVerdict | None:
+    """Aplica la semántica temporal canónica de órdenes entregadas.
+
+    En Dat-IA, "entregada" selecciona ``order_status='delivered'``. Cuando
+    además se pide una serie o rango temporal, la dimensión de negocio es la
+    fecha de compra, salvo que la pregunta solicite explícitamente la fecha de
+    entrega efectiva al cliente.
+    """
+    delivered_filter = any(
+        query_filter.field == "order_status"
+        and query_filter.operator == "="
+        and _normalize_text(query_filter.value) == "delivered"
+        for query_filter in optimized_query.filters
+    )
+    temporal_query = (
+        "month" in optimized_query.group_by
+        or optimized_query.date_range is not None
+    )
+
+    if (
+        not delivered_filter
+        or not temporal_query
+        or _explicit_delivery_date_requested(optimized_query.original_question)
+    ):
+        return None
+
+    normalized_sql = sql.casefold()
+    if "order_purchase_timestamp" in normalized_sql:
+        return None
+
+    return SqlVerdict(
+        issues=[
+            "Las órdenes entregadas por mes o periodo deben usar "
+            "order_purchase_timestamp como eje temporal; el SQL usa otra "
+            "fecha o no incluye la fecha de compra."
+        ],
+        is_valid=False,
+        answers_question=False,
+        suggested_fix=(
+            "Usa order_purchase_timestamp tanto en DATE_TRUNC('month', ...) "
+            "como en el filtro del rango temporal. Mantén "
+            "order_status = 'delivered'."
+        ),
+        confidence=1.0,
+    )
+
+
+def deterministic_business_verdict(
+    optimized_query: OptimizedQuery,
+    sql: str,
+) -> SqlVerdict | None:
+    """Devuelve un rechazo determinístico o ``None`` si debe juzgar el LLM."""
+    return _delivered_order_temporal_verdict(optimized_query, sql)
+
+
+def judge_sql(
+    optimized_query: OptimizedQuery,
+    sql: str,
+    llm: Any,
+    source_schema: str = "",
+) -> SqlVerdict:
     """Evalúa si `sql` implementa la estructura de negocio de `optimized_query`.
 
-    No recibe el DDL ni ejemplos de memoria: si el juez viera el mismo
-    contexto que vio el generador, tendería a razonar igual y confirmar el
-    mismo error. Ve la pregunta normalizada, los campos estructurados del
-    optimizer y el SQL final, todo tratado como dato no confiable.
-
-    Args:
-        optimized_query: pregunta ya normalizada, con intent/operation/
-            metrics/filters/date_range/group_by explícitos.
-        sql: SQL generado a evaluar, aún sin ejecutar.
-        llm: cliente LangChain (ej. `ChatGoogleGenerativeAI`) sin
-            `with_structured_output` aplicado todavía; se aplica aquí con
-            `SqlVerdict` como esquema.
-
-    Returns:
-        `SqlVerdict` con el razonamiento (`issues`) y el veredicto.
+    Las invariantes de negocio conocidas se comprueban primero sin gastar una
+    llamada LLM. Si ninguna rechaza el SQL, el juez LLM evalúa el resto de la
+    semántica contra la pregunta y la estructura del optimizer.
     """
+    deterministic_verdict = deterministic_business_verdict(
+        optimized_query,
+        sql,
+    )
+    if deterministic_verdict is not None:
+        return deterministic_verdict
+
     fields = optimized_query.to_dict()
     prompt = JUDGE_PROMPT_TEMPLATE.format(
         normalized_question=fields["normalized_question"],
