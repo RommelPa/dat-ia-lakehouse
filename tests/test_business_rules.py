@@ -54,6 +54,17 @@ def test_match_business_rules_respects_exclusion_terms() -> None:
     assert not any(rule.id == "categorias_producto" for rule in matched)
 
 
+def test_delivered_order_period_rule_uses_purchase_timestamp() -> None:
+    matched = match_business_rules(
+        "¿Cuántas órdenes entregadas hubo por mes durante 2018?"
+    )
+    rule = next(rule for rule in matched if rule.id == "ordenes_entregadas")
+
+    assert "order_purchase_timestamp" in rule.regla
+    assert "order_delivered_customer_date" in rule.regla
+    assert "explícita" in rule.regla
+
+
 def test_monthly_grouping_rule_avoids_sqlite_only_function() -> None:
     matched = match_business_rules(
         "¿Cuántas órdenes entregadas hubo por mes durante 2018?"
