@@ -215,3 +215,29 @@ def test_explicit_delivery_date_question_allows_delivery_timestamp() -> None:
     )
 
     assert deterministic_business_verdict(optimized, sql) is None
+
+
+def test_judge_prompt_preserves_purchase_timestamp_business_invariant() -> None:
+    payload = {
+        "issues": [],
+        "is_valid": True,
+        "answers_question": True,
+        "suggested_fix": "",
+        "confidence": 1.0,
+    }
+    llm = FakeJudgeLlm(payload)
+    optimized = _delivered_monthly_query(
+        "¿Cuántas órdenes entregadas hubo por mes durante 2018?"
+    )
+    sql = (
+        "SELECT DATE_TRUNC('month', order_purchase_timestamp) AS month, "
+        "COUNT(*) AS order_count FROM olist_orders_dataset "
+        "WHERE order_status = 'delivered' GROUP BY 1"
+    )
+
+    judge_sql(optimized, sql, llm)
+
+    prompt = llm.captured_prompts[0]
+    assert "Regla determinística autorizada" in prompt
+    assert "order_purchase_timestamp" in prompt
+    assert "No rechaces el SQL por usar la fecha de compra" in prompt
