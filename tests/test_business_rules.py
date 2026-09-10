@@ -1,5 +1,6 @@
 from app.context.business_rules import (
     BusinessRule,
+    excluded_tables,
     load_business_rules,
     match_business_rules,
     render_business_rules,
@@ -158,3 +159,15 @@ def test_render_business_rules_formats_one_bullet_per_rule() -> None:
     rendered = render_business_rules([rule])
 
     assert rendered == "- Texto de la regla."
+
+
+def test_review_category_rule_excludes_translation_table() -> None:
+    question = (
+        "¿Cuáles son las 5 categorías con mejor calificación promedio, "
+        "considerando al menos 100 reseñas?"
+    )
+    matched = match_business_rules(question)
+
+    assert excluded_tables(matched, question) == [
+        "product_category_name_translation"
+    ]
