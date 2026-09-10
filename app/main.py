@@ -35,7 +35,7 @@ from app.observability import (
     traceable_stage,
 )
 
-from app.context.business_rules import match_business_rules, render_business_rules
+from app.context.business_rules import excluded_tables, match_business_rules, render_business_rules
 from app.context.semantic_policies import build_semantic_policy_section
 from app.optimizer.query_optimizer import OptimizedQuery, optimize_query
 from app.validation.result_guardrail import (
@@ -675,7 +675,10 @@ def _decode_policies_from_metadata(metadata: dict) -> list[str]:
     tags=_trace_tags(operation="semantic_ddl_retrieval"),
 )
 def query_embeddings(
-    collection, query: str, distance_threshold: float = 0.7
+    collection,
+    query: str,
+    distance_threshold: float = 0.7,
+    excluded_tables: list[str] | None = None,
 ) -> EmbeddingsResponse:
     """
     Consulta vectorial filtrando por distancia semántica.
@@ -684,6 +687,12 @@ def query_embeddings(
     resultados = collection.similarity_search_with_score(
         query, k=10
     )  # trae más candidatos
+    excluded = {str(table).strip() for table in (excluded_tables or [])}
+    resultados = [
+        (doc, dist)
+        for doc, dist in resultados
+        if str(doc.metadata.get("nombre") or "").strip() not in excluded
+    ]
 
     # Candidatos crudos (antes de filtrar), para diagnóstico: si nada pasa
     # el umbral más abajo, esta lista es la única forma de ver qué tan
@@ -854,17 +863,24 @@ def retrieve_ddl_context(
     suggested_tables: list[str] | None = None,
     distance_threshold: float = 0.7,
     tool_logs: list[dict[str, Any]] | None = None,
+    excluded_tables: list[str] | None = None,
 ) -> EmbeddingsResponse:
     """Combina tablas sugeridas exactas y recuperación semántica."""
+    excluded = {str(table).strip() for table in (excluded_tables or [])}
     exact = _get_suggested_table_embeddings(
         collection,
-        suggested_tables,
+        [
+            table
+            for table in (suggested_tables or [])
+            if str(table).strip() not in excluded
+        ],
     )
 
     semantic = query_embeddings(
         collection,
         query,
         distance_threshold=distance_threshold,
+        excluded_tables=list(excluded),
     )
 
     raw_collection = getattr(
@@ -2084,6 +2100,10 @@ async def query_answer(request: QueryRequest):
     # `suggested_tables`; acá solo se recupera el texto para el prompt.
     matched_business_rules = match_business_rules(optimized_query.original_question)
     business_rules_text = render_business_rules(matched_business_rules)
+    business_rule_excluded_tables = excluded_tables(
+        matched_business_rules,
+        optimized_query.original_question,
+    )
 
     retrieval_distance_threshold = 0.7
     resp = retrieve_ddl_context(
@@ -2091,6 +2111,7 @@ async def query_answer(request: QueryRequest):
         query_for_retrieval,
         suggested_tables=(optimized_query.suggested_tables),
         distance_threshold=retrieval_distance_threshold,
+        excluded_tables=business_rule_excluded_tables,
     )
 
     table_policies = build_semantic_policy_section(resp.tabla, resp.politicas)
