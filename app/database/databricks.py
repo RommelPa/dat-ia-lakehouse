@@ -10,6 +10,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import ParseError
+
 
 ConnectCallable = Callable[..., Any]
 
@@ -82,14 +86,21 @@ class DatabricksExecutor:
         self._connect = connect or _default_connect
 
     def execute(self, sql_text: str, row_limit: int = 200) -> dict[str, Any]:
-        """Ejecuta una única sentencia SELECT y limita las filas devueltas."""
+        """Ejecuta una única consulta de solo lectura y limita sus filas."""
         stripped = str(sql_text or "").strip().rstrip(";")
-
-        if not stripped.lower().startswith("select"):
-            return {"error": "Solo se permiten sentencias SELECT."}
 
         if ";" in stripped:
             return {"error": "Solo se permite una sentencia SQL por consulta."}
+
+        try:
+            expression = sqlglot.parse_one(stripped, read="databricks")
+        except ParseError:
+            return {"error": "Solo se permiten sentencias SELECT."}
+
+        # Un SELECT con CTE sigue siendo exp.Select en sqlglot; esto
+        # permite WITH ... SELECT sin abrir la puerta a DML/DDL.
+        if not isinstance(expression, exp.Select):
+            return {"error": "Solo se permiten sentencias SELECT."}
 
         if row_limit < 1:
             return {"error": "row_limit debe ser mayor que cero."}
