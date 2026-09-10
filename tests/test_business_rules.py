@@ -7,12 +7,14 @@ from app.context.business_rules import (
 )
 
 
-def test_load_business_rules_reads_the_four_global_rules() -> None:
+def test_load_business_rules_reads_the_six_global_rules() -> None:
     rules = load_business_rules()
 
     assert {rule.id for rule in rules} == {
         "geografia_estado",
         "ordenes_entregadas",
+        "agrupacion_mensual",
+        "distribucion_resenas_por_calificacion",
         "categorias_producto",
         "compradores_unicos",
     }
@@ -50,6 +52,35 @@ def test_match_business_rules_respects_exclusion_terms() -> None:
     )
 
     assert not any(rule.id == "categorias_producto" for rule in matched)
+
+
+def test_monthly_grouping_rule_avoids_sqlite_only_function() -> None:
+    matched = match_business_rules(
+        "¿Cuántas órdenes entregadas hubo por mes durante 2018?"
+    )
+    rule = next(rule for rule in matched if rule.id == "agrupacion_mensual")
+
+    assert "DATE_TRUNC" in rule.regla
+    assert "strftime" in rule.regla
+
+
+def test_review_distribution_rule_separates_dimension_and_count_alias() -> None:
+    matched = match_business_rules(
+        "¿Cuántas reseñas hay para cada calificación del 1 al 5?"
+    )
+    rule = next(
+        rule
+        for rule in matched
+        if rule.id == "distribucion_resenas_por_calificacion"
+    )
+    tables = required_tables(
+        matched,
+        "¿Cuántas reseñas hay para cada calificación del 1 al 5?",
+    )
+
+    assert "COUNT(*) AS reviews" in rule.regla
+    assert "COUNT(*) AS review_score" in rule.regla
+    assert "olist_order_reviews_dataset" in tables
 
 
 def test_required_tables_uses_default_when_no_alternative_matches() -> None:
