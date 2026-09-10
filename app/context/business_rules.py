@@ -136,6 +136,32 @@ def required_tables(
     return tables
 
 
+def excluded_tables(
+    matched_rules: list[BusinessRule],
+    question: str,
+) -> list[str]:
+    """Tablas que una alternativa de negocio reemplaza explícitamente.
+
+    Si una regla activa una alternativa, las tablas por defecto que no están
+    en esa alternativa no deben reingresar por retrieval semántico. Esto
+    permite que una regla no solo agregue contexto, sino que también elimine
+    contexto incompatible con una interpretación de negocio más específica.
+    """
+    normalized_text = normalize_for_matching(question)
+    excluded: list[str] = []
+
+    for rule in matched_rules:
+        selected = _tables_for_rule(rule, normalized_text)
+        if selected == rule.tablas_requeridas:
+            continue
+
+        for table in rule.tablas_requeridas:
+            if table not in selected and table not in excluded:
+                excluded.append(table)
+
+    return excluded
+
+
 def render_business_rules(matched_rules: list[BusinessRule]) -> str:
     if not matched_rules:
         return ""
