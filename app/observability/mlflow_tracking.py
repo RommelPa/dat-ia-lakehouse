@@ -84,6 +84,31 @@ def _report_params(report: Mapping[str, Any]) -> dict[str, Any]:
         if value is not None:
             params[key] = value
 
+    override_case_ids = report.get("override_case_ids")
+    if isinstance(override_case_ids, list):
+        normalized_overrides = [
+            str(case_id).strip()
+            for case_id in override_case_ids
+            if str(case_id).strip()
+        ]
+        params["override_count"] = len(normalized_overrides)
+        if normalized_overrides:
+            params["override_case_ids"] = ",".join(normalized_overrides)
+
+    summary = report.get("summary")
+    if isinstance(summary, Mapping):
+        runner_error_case_ids = summary.get("runner_error_case_ids")
+        if isinstance(runner_error_case_ids, list):
+            normalized_runner_errors = [
+                str(case_id).strip()
+                for case_id in runner_error_case_ids
+                if str(case_id).strip()
+            ]
+            if normalized_runner_errors:
+                params["runner_error_case_ids"] = ",".join(
+                    normalized_runner_errors
+                )
+
     ready = report.get("ready")
     if isinstance(ready, Mapping):
         for key in ("backend", "database"):
