@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 
 from app.optimizer.query_optimizer import OptimizedQuery
 from app.validation.sql_validator import DEFAULT_ROW_LIMIT
@@ -124,20 +125,35 @@ def _numbers_match(candidate: float, value: float, tolerance: float) -> bool:
 
 
 def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
-    """Obtiene valores crudos y equivalentes porcentuales de las filas."""
+    """Obtiene valores crudos, porcentuales y años presentes en las filas."""
     raw_values: set[float] = set()
     percentage_values: set[float] = set()
 
     for row in rows:
         for key, value in row.items():
-            if not isinstance(value, (int, float, Decimal)):
+            numeric_value: float | None = None
+
+            if isinstance(value, (int, float, Decimal)):
+                numeric_value = float(value)
+            elif isinstance(value, str):
+                try:
+                    numeric_value = float(Decimal(value.strip()))
+                except (InvalidOperation, ValueError):
+                    numeric_value = None
+            elif isinstance(value, (date, datetime)):
+                raw_values.add(float(value.year))
+
+            if numeric_value is not None:
+                raw_values.add(numeric_value)
+
+                if _looks_like_percentage_key(str(key)) and abs(numeric_value) <= 1:
+                    percentage_values.add(numeric_value * 100)
                 continue
 
-            numeric_value = float(value)
-            raw_values.add(numeric_value)
-
-            if _looks_like_percentage_key(str(key)) and abs(numeric_value) <= 1:
-                percentage_values.add(numeric_value * 100)
+            if isinstance(value, str):
+                date_match = re.match(r"^(?P<year>\d{4})-\d{2}-\d{2}", value.strip())
+                if date_match:
+                    raw_values.add(float(date_match.group("year")))
 
     return raw_values, percentage_values
 
