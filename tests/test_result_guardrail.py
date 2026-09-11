@@ -237,3 +237,61 @@ def test_check_groundedness_accepts_numeric_string_values() -> None:
 
     assert result.ok is True
     assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_accepts_high_precision_decimal_comma_percentage() -> None:
+    rows = [{"order_count": "8.11236653882036"}]
+    answer = "El porcentaje de órdenes entregadas que llegaron tarde es 8,11236653882036 %."
+    question = "¿Qué porcentaje de las órdenes entregadas llegó tarde?"
+
+    result = check_groundedness(answer, rows, question=question)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_accepts_direct_percentage_scale_column() -> None:
+    rows = [{"percentage_resolved": "85.23870967741935"}]
+    answer = "El porcentaje resuelto fue 85,23870967741935 %."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_accepts_numeric_constraints_from_question() -> None:
+    rows = [{"category": "books", "review_score": 4.46}]
+    answer = "Las 5 mejores categorías, considerando al menos 100 reseñas, incluyen books con 4,46."
+    question = "¿Cuáles son las 5 categorías con mejor calificación promedio, considerando al menos 100 reseñas?"
+
+    result = check_groundedness(answer, rows, question=question)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_ignores_digits_inside_alphanumeric_identifiers() -> None:
+    rows = [
+        {
+            "seller_id": "4869f7a5dfa277a7dca6462dcf3b52b2",
+            "revenue": "226987.93",
+        }
+    ]
+    answer = "Vendedor 4869f7a5dfa277a7dca6462dcf3b52b2: 226987,93"
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_still_rejects_number_not_in_rows_or_question() -> None:
+    rows = [{"category": "books", "review_score": 4.46}]
+    answer = "Las 5 mejores categorías incluyen books con 99 reseñas."
+    question = "¿Cuáles son las 5 categorías con mejor calificación?"
+
+    result = check_groundedness(answer, rows, question=question)
+
+    assert result.ok is False
+    assert result.unsupported_numbers == ["99"]
