@@ -310,6 +310,31 @@ def _average_stage_latencies(
     }
 
 
+def _average_stage_call_counts(
+    case_results: Sequence[Mapping[str, Any]],
+) -> dict[str, float]:
+    """Promedia invocaciones visibles por etapa reportadas por la API."""
+    samples: dict[str, list[int]] = {}
+
+    for case in case_results:
+        output = case.get("output")
+        if not isinstance(output, Mapping):
+            continue
+
+        call_counts = output.get("stage_call_counts")
+        if not isinstance(call_counts, Mapping):
+            continue
+
+        for stage, value in call_counts.items():
+            if isinstance(value, int) and value >= 0:
+                samples.setdefault(str(stage), []).append(value)
+
+    return {
+        stage: round(sum(values) / len(values), 3)
+        for stage, values in sorted(samples.items())
+        if values
+    }
+
 def _average_component_latencies(
     case_results: Sequence[Mapping[str, Any]],
 ) -> dict[str, float]:
@@ -388,6 +413,7 @@ def _summary(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "max_latency_ms": round(max(latencies), 3) if latencies else None,
         "avg_stage_latency_ms": _average_stage_latencies(case_results),
         "avg_component_latency_ms": _average_component_latencies(case_results),
+        "avg_stage_call_counts": _average_stage_call_counts(case_results),
     }
 
 
