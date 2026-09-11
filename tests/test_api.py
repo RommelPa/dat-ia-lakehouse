@@ -2404,6 +2404,8 @@ def test_query_answer_uses_query_runtime_when_available(
 
 
 def test_build_rag_response_includes_active_sql_dialect(monkeypatch) -> None:
+    from app import main as main_module
+
     captured = {}
 
     class FakeStructuredLlm:
