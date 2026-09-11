@@ -2507,3 +2507,69 @@ def test_build_rag_response_includes_active_sql_dialect(monkeypatch) -> None:
 
     assert "dialect: databricks" in captured["prompt"]
     assert "Use Databricks SQL syntax and functions." in captured["prompt"]
+
+
+def test_query_answer_returns_structured_provider_error_for_sql_generation(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    _mock_answer_pipeline(monkeypatch)
+
+    def fail_generation(*args, **kwargs):
+        _ = args, kwargs
+        raise TimeoutError("provider detail must stay private")
+
+    monkeypatch.setattr(main_module, "build_rag_response", fail_generation)
+
+    response = client.post(
+        "/query/answer",
+        json={"question": "Que empresa de transporte tiene mejor cumplimiento?"},
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "provider_error"
+    assert body["error_stage"] == "sql_generation"
+    assert body["error_type"] == "TimeoutError"
+    assert "sql_generation" in body["timings_ms"]
+    assert body["stage_call_counts"]["sql_generation"] == 1
+    assert "provider detail" not in body["answer"]
+
+
+def test_query_answer_returns_structured_provider_error_for_answer_synthesis(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    _mock_answer_pipeline(monkeypatch)
+
+    monkeypatch.setattr(
+        main_module,
+        "execute_sql",
+        lambda db, sql, row_limit=200: {
+            "rows": [{"carrier_name": "DHL", "on_time_rate": 0.97}]
+        },
+    )
+
+    def fail_answer(*args, **kwargs):
+        _ = args, kwargs
+        raise ConnectionError("sensitive transport detail")
+
+    monkeypatch.setattr(main_module, "synthesize_answer", fail_answer)
+
+    response = client.post(
+        "/query/answer",
+        json={"question": "Que empresa de transporte tiene mejor cumplimiento?"},
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "provider_error"
+    assert body["error_stage"] == "answer_synthesis"
+    assert body["error_type"] == "ConnectionError"
+    assert body["sql"].startswith("SELECT carrier_name")
+    assert body["sources"] == "carriers"
+    assert "answer_synthesis" in body["timings_ms"]
+    assert body["stage_call_counts"]["answer_synthesis"] == 1
+    assert "sensitive transport detail" not in body["answer"]
