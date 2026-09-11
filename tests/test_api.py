@@ -1702,6 +1702,10 @@ def test_query_answer_full_flow_success(monkeypatch) -> None:
     assert "sql_judgement" in body["timings_ms"]
     assert "sql_execution" in body["timings_ms"]
     assert "answer_synthesis" in body["timings_ms"]
+    assert body["stage_call_counts"]["optimizer"] == 1
+    assert body["stage_call_counts"]["sql_generation"] == 1
+    assert body["stage_call_counts"]["sql_judgement"] == 1
+    assert body["stage_call_counts"]["answer_synthesis"] == 1
 
 
 def test_query_answer_warns_when_result_is_truncated(monkeypatch) -> None:
