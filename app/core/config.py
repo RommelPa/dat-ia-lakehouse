@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     model: str = "gemini-3.1-flash-lite-preview"
     embed_model: str = "gemini-embedding-2"
+    gemini_max_retries: int = 6
+    gemini_timeout_seconds: float | None = None
 
     chroma_path: str = "./chroma_db"
     chroma_host: str | None = None
