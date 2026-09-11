@@ -14,7 +14,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
-from app.observability import timed_call
+from app.observability.timing import timed_call
 
 
 ConnectCallable = Callable[..., Any]
