@@ -176,15 +176,74 @@ def test_validate_sql_uses_explicit_databricks_dialect() -> None:
     assert result.stage == "ok"
 
 
-def test_validate_sql_rejects_postgres_only_cast_in_databricks_dialect() -> None:
-    sql = "SELECT price::text AS total FROM olist_order_items_dataset;"
+def test_validate_sql_rejects_postgres_distinct_on_for_databricks() -> None:
+    sql = "SELECT DISTINCT ON (customer_id) customer_id FROM customers;"
 
     result = validate_sql(
         sql,
-        allowed_tables=["olist_order_items_dataset"],
+        allowed_tables=["customers"],
         dialect="databricks",
     )
 
-    # SQLGlot may parse cross-dialect syntax leniently; the contract here is
-    # that the requested dialect is accepted and validation remains explicit.
-    assert result.stage in {"ok", "syntax"}
+    assert result.is_valid is False
+    assert result.stage == "dialect"
+    assert "DISTINCT ON" in result.error
+
+
+def test_validate_sql_rejects_postgres_generate_series_for_databricks() -> None:
+    result = validate_sql(
+        "SELECT * FROM generate_series(1, 10);",
+        allowed_tables=[],
+        dialect="databricks",
+    )
+
+    assert result.is_valid is False
+    assert result.stage == "dialect"
+    assert "generate_series" in result.error
+
+
+def test_validate_sql_rejects_databricks_qualify_for_postgres() -> None:
+    sql = (
+        "SELECT customer_id, ROW_NUMBER() OVER (ORDER BY customer_id) AS rn "
+        "FROM customers QUALIFY rn = 1;"
+    )
+
+    result = validate_sql(
+        sql,
+        allowed_tables=["customers"],
+        dialect="postgres",
+    )
+
+    assert result.is_valid is False
+    assert result.stage == "dialect"
+    assert "QUALIFY" in result.error
+
+
+def test_validate_sql_rejects_databricks_collect_list_for_postgres() -> None:
+    sql = "SELECT collect_list(customer_id) FROM customers;"
+
+    result = validate_sql(
+        sql,
+        allowed_tables=["customers"],
+        dialect="postgres",
+    )
+
+    assert result.is_valid is False
+    assert result.stage == "dialect"
+    assert "collect_list" in result.error
+
+
+def test_validate_sql_dialect_guard_ignores_literals_and_comments() -> None:
+    sql = (
+        "SELECT 'generate_series(1, 10)' AS note "
+        "FROM customers -- DISTINCT ON (customer_id)"
+    )
+
+    result = validate_sql(
+        sql,
+        allowed_tables=["customers"],
+        dialect="databricks",
+    )
+
+    assert result.is_valid is True
+    assert result.stage == "ok"
