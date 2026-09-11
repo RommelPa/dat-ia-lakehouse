@@ -19,14 +19,20 @@ def timed_call(
     stage: str,
     func: Callable[..., T],
     *args: Any,
+    call_counts: MutableMapping[str, int] | None = None,
     **kwargs: Any,
 ) -> T:
     """Ejecuta una función y acumula su duración bajo stage.
 
-    Cuando timings_ms es None no añade instrumentación. Si una etapa se
-    ejecuta varias veces (por ejemplo, un reintento del generador o de la
-    síntesis), sus tiempos se suman.
+    Cuando timings_ms es None no añade medición temporal. Si call_counts se
+    proporciona, registra cada invocación visible de la etapa incluso cuando
+    la función falla. Si una etapa se ejecuta varias veces (por ejemplo, un
+    reintento del generador o de la síntesis), sus tiempos y llamadas se
+    acumulan.
     """
+    if call_counts is not None:
+        call_counts[stage] = int(call_counts.get(stage, 0)) + 1
+
     if timings_ms is None:
         return func(*args, **kwargs)
 
