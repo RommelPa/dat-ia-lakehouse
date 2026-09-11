@@ -57,6 +57,12 @@ class QueryRuntime:
 
         return _execute_postgres(self.validation_db, sql_text, row_limit=row_limit)
 
+    def close(self) -> None:
+        """Libera recursos persistentes del backend cuando aplica."""
+        close = getattr(self.executor, "close", None)
+        if callable(close):
+            close()
+
 
 def _execute_postgres(
     db: SQLDatabase | None,
