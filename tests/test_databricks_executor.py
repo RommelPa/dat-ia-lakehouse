@@ -76,6 +76,10 @@ def test_execute_maps_rows_and_uses_gold_namespace():
     assert cursor.executed_sql == "SELECT COUNT(*) AS orders, 'delivered' AS status"
     assert cursor.fetchmany_size == 10
     assert cursor.closed is True
+    assert connection.closed is False
+
+    executor.close()
+
     assert connection.closed is True
 
 
@@ -144,6 +148,10 @@ def test_execute_accepts_read_only_cte() -> None:
     assert result == {"rows": [{"category": "books", "score": 4.5}]}
     assert cursor.executed_sql == sql
     assert cursor.closed is True
+    assert connection.closed is False
+
+    executor.close()
+
     assert connection.closed is True
 
 
@@ -181,5 +189,95 @@ def test_execute_records_databricks_substep_timings(monkeypatch) -> None:
         "databricks_cursor": 20.0,
         "databricks_execute": 30.0,
         "databricks_fetch": 40.0,
-        "databricks_close": 11.0,
+        "databricks_cursor_close": 5.0,
     }
+
+
+def test_execute_reuses_connection_across_queries() -> None:
+    first_cursor = FakeCursor(
+        rows=[(1,)],
+        description=[("value",)],
+    )
+    second_cursor = FakeCursor(
+        rows=[(2,)],
+        description=[("value",)],
+    )
+    cursors = iter([first_cursor, second_cursor])
+    connect_calls = []
+
+    class MultiCursorConnection:
+        def __init__(self):
+            self.closed = False
+
+        def cursor(self):
+            return next(cursors)
+
+        def close(self):
+            self.closed = True
+
+    connection = MultiCursorConnection()
+
+    def fake_connect(**kwargs):
+        connect_calls.append(kwargs)
+        return connection
+
+    executor = DatabricksExecutor(
+        DatabricksSqlConfig(
+            server_hostname="workspace.example.databricks.com",
+            http_path="/sql/1.0/warehouses/example",
+        ),
+        connect=fake_connect,
+    )
+
+    first = executor.execute("SELECT 1 AS value")
+    second = executor.execute("SELECT 2 AS value")
+
+    assert first == {"rows": [{"value": 1}]}
+    assert second == {"rows": [{"value": 2}]}
+    assert len(connect_calls) == 1
+    assert connection.closed is False
+    assert first_cursor.closed is True
+    assert second_cursor.closed is True
+
+    executor.close()
+
+    assert connection.closed is True
+
+
+def test_execute_invalidates_connection_after_error() -> None:
+    failing_cursor = FakeCursor(error=RuntimeError("session expired"))
+    healthy_cursor = FakeCursor(
+        rows=[(1,)],
+        description=[("value",)],
+    )
+    connections = [
+        FakeConnection(failing_cursor),
+        FakeConnection(healthy_cursor),
+    ]
+    connect_calls = []
+
+    def fake_connect(**kwargs):
+        connection = connections[len(connect_calls)]
+        connect_calls.append(kwargs)
+        return connection
+
+    executor = DatabricksExecutor(
+        DatabricksSqlConfig(
+            server_hostname="workspace.example.databricks.com",
+            http_path="/sql/1.0/warehouses/example",
+        ),
+        connect=fake_connect,
+    )
+
+    failed = executor.execute("SELECT 1")
+    recovered = executor.execute("SELECT 1")
+
+    assert failed == {"error": "session expired"}
+    assert recovered == {"rows": [{"value": 1}]}
+    assert len(connect_calls) == 2
+    assert connections[0].closed is True
+    assert connections[1].closed is False
+
+    executor.close()
+
+    assert connections[1].closed is True
