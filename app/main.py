@@ -2001,7 +2001,10 @@ async def query_json(request: QueryRequest):
         )
 
     try:
-        optimized_query = optimize_query_stage(
+        optimized_query = timed_call(
+            timings_ms,
+            "optimizer",
+            optimize_query_stage,
             request.question,
             llm=optimizer_llm,
         )
@@ -2141,6 +2144,7 @@ async def query_answer(request: QueryRequest):
             sources="",
             status="prototype",
             shield=shield_info,
+            timings_ms=timings_ms,
         )
 
     try:
@@ -2211,6 +2215,7 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
         )
 
     rag_response, verdict, attempts = generate_validated_sql(
@@ -2237,6 +2242,7 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
         )
 
     approved = verdict is not None and verdict.is_valid and verdict.answers_question
@@ -2258,6 +2264,7 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
         )
 
     active_query_resource = (
@@ -2291,6 +2298,7 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
         )
 
     rows = execution["rows"]
