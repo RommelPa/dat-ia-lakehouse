@@ -7,6 +7,7 @@ from scripts.benchmark_query_backends import (
 from scripts import benchmark_text_to_sql as benchmark_module
 from scripts.benchmark_text_to_sql import (
     _average_component_latencies,
+    _average_stage_call_counts,
     _average_stage_latencies,
     _track_with_mlflow,
     effective_reference_outputs,
@@ -253,4 +254,19 @@ def test_average_component_latencies_groups_pipeline_stages() -> None:
         "guardrails": 8.0,
         "llm": 387.5,
         "retrieval": 35.0,
+    }
+
+
+def test_average_stage_call_counts_uses_api_counters() -> None:
+    cases = [
+        {"output": {"stage_call_counts": {"optimizer": 1, "sql_judgement": 1}}},
+        {"output": {"stage_call_counts": {"optimizer": 1, "sql_judgement": 2}}},
+        {"output": {"status": "runner_error"}},
+    ]
+
+    result = _average_stage_call_counts(cases)
+
+    assert result == {
+        "optimizer": 1.0,
+        "sql_judgement": 1.5,
     }
