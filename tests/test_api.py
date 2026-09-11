@@ -88,6 +88,7 @@ def test_ready_returns_database_not_configured() -> None:
 
     assert response.status_code == 200
     assert response.json()["database"] == "not_configured"
+    assert response.json()["optimizer_mode"] == "hybrid"
     assert response.json()["langsmith"] == "not_connected"
 
 
@@ -586,6 +587,54 @@ def test_memory_v2_search_validated_filter_hides_provisional_sql(
     )
     assert "unverified_column" not in str(body)
 
+
+
+def test_optimize_query_stage_respects_rule_based_mode(monkeypatch) -> None:
+    from app import main as main_module
+
+    captured = {}
+
+    def fake_optimize_query(question, *, llm=None, use_llm=True):
+        captured["question"] = question
+        captured["llm"] = llm
+        captured["use_llm"] = use_llm
+        return OptimizedQuery(
+            original_question=question,
+            normalized_question=question,
+            intent="count",
+            operation="count",
+            metrics=[],
+            filters=[],
+            date_range=None,
+            group_by=[],
+            context=[],
+            suggested_tables=[],
+            optimizer="rule_based",
+        )
+
+    monkeypatch.setattr(
+        main_module.SETTINGS,
+        "query_optimizer_mode",
+        "rule_based",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "optimize_query",
+        fake_optimize_query,
+    )
+
+    llm = object()
+    result = main_module.optimize_query_stage(
+        "¿Cuántas órdenes hay?",
+        llm=llm,
+    )
+
+    assert result.optimizer == "rule_based"
+    assert captured == {
+        "question": "¿Cuántas órdenes hay?",
+        "llm": llm,
+        "use_llm": False,
+    }
 
 def test_query_optimize_returns_normalized_response() -> None:
     response = client.post(
