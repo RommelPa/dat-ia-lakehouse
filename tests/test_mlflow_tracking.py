@@ -128,4 +128,5 @@ def test_log_benchmark_report_skips_missing_artifact(tmp_path: Path) -> None:
     )
 
     assert run_id == "run-123"
+    assert fake.tracking_uri == "sqlite:///mlflow.db"
     assert fake.artifacts == []
