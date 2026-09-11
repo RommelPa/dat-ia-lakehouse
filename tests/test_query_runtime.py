@@ -172,3 +172,20 @@ def test_query_runtime_accepts_postgres_read_only_cte() -> None:
 
     assert result == {"rows": [{"value": 1}]}
     assert db.calls == [(sql, "cursor")]
+
+
+def test_query_runtime_close_delegates_to_executor() -> None:
+    calls = []
+
+    class ClosableExecutor:
+        def close(self) -> None:
+            calls.append("closed")
+
+    runtime = QueryRuntime(
+        name="databricks",
+        executor=ClosableExecutor(),
+    )
+
+    runtime.close()
+
+    assert calls == ["closed"]
