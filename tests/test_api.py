@@ -83,12 +83,26 @@ def test_evaluator_optimizer_functions_are_traceable() -> None:
         )
 
 
+
+def test_gemini_runtime_kwargs_use_settings(monkeypatch) -> None:
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module.SETTINGS, "gemini_max_retries", 2)
+    monkeypatch.setattr(main_module.SETTINGS, "gemini_timeout_seconds", 30.0)
+
+    assert main_module._gemini_runtime_kwargs() == {
+        "max_retries": 2,
+        "timeout": 30.0,
+    }
+
 def test_ready_returns_database_not_configured() -> None:
     response = client.get("/ready")
 
     assert response.status_code == 200
     assert response.json()["database"] == "not_configured"
     assert response.json()["optimizer_mode"] == "hybrid"
+    assert response.json()["gemini_max_retries"] == 6
+    assert response.json()["gemini_timeout_seconds"] is None
     assert response.json()["langsmith"] == "not_connected"
 
 
