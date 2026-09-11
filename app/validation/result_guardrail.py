@@ -161,7 +161,7 @@ def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
 
 
 _NUMBER_PATTERN = re.compile(
-    r"(?<![\\w])(?P<number>\\d+(?:[.,]\\d+)?)(?P<percent>\\s*%)?(?![\\w])"
+    r"(?<![\w])(?P<number>\d+(?:[.,]\d+)?)(?P<percent>\s*%)?(?![\w])"
 )
 
 
