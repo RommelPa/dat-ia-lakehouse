@@ -1759,9 +1759,10 @@ def check_result_stage(
 def check_groundedness_stage(
     answer: str,
     rows: list[dict],
+    question: str = "",
 ) -> GroundednessCheck:
     """Ejecuta la verificación de groundedness dentro del árbol de trazas."""
-    return check_groundedness(answer, rows)
+    return check_groundedness(answer, rows, question=question)
 
 
 # ---------------------------------------------------------------------------
@@ -2442,6 +2443,7 @@ async def query_answer(request: QueryRequest):
         check_groundedness_stage,
         answer_text,
         rows,
+        request.question,
     )
 
     if not groundedness.ok:
