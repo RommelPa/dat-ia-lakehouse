@@ -13,8 +13,14 @@ def test_query_json_returns_tool_logs(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "text_collection", _DummyCollection())
     monkeypatch.setattr(main_module, "optimizer_llm", object())
 
-    def fake_optimize_query(question, llm):
+    def fake_optimize_query(
+        question,
+        *,
+        llm=None,
+        use_llm=True,
+    ):
         _ = llm
+        assert use_llm is True
         return SimpleNamespace(
             normalized_question=question,
             suggested_tables=["ventas"],
