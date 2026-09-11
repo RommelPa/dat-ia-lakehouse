@@ -1393,10 +1393,10 @@ def generate_validated_sql(
         rag_response = timed_call(
             timings_ms,
             "sql_generation",
-            call_counts=stage_call_counts,
             build_rag_response,
             question,
             ddl,
+            call_counts=stage_call_counts,
             optimized_query=optimized_query,
             memory_examples=memory_examples,
             feedback=feedback,
@@ -1419,7 +1419,6 @@ def generate_validated_sql(
         validation = timed_call(
             timings_ms,
             "sql_validation",
-            call_counts=stage_call_counts,
             validate_sql_stage,
             rag_response.sql,
             allowed_tables,
@@ -1444,11 +1443,11 @@ def generate_validated_sql(
         verdict = timed_call(
             timings_ms,
             "sql_judgement",
-            call_counts=stage_call_counts,
             judge_sql_stage,
             optimized_query,
             rag_response.sql,
             judge_llm,
+            call_counts=stage_call_counts,
             source_schema=rag_response.source_schema,
             dialect=_active_sql_dialect(),
         )
@@ -2117,7 +2116,6 @@ async def query_answer(request: QueryRequest):
     label, score = timed_call(
         timings_ms,
         "input_shield",
-        call_counts=stage_call_counts,
         classify_shield,
         request.question,
     )
@@ -2154,9 +2152,9 @@ async def query_answer(request: QueryRequest):
         optimized_query = timed_call(
             timings_ms,
             "optimizer",
-        call_counts=stage_call_counts,
             optimize_query_stage,
             request.question,
+            call_counts=stage_call_counts,
             llm=optimizer_llm,
         )
     except ValueError as exc:
@@ -2171,7 +2169,6 @@ async def query_answer(request: QueryRequest):
     memory_examples = timed_call(
         timings_ms,
         "memory_retrieval",
-        call_counts=stage_call_counts,
         _search_query_memory_v2_examples,
         optimized_query,
         n_results=2,
@@ -2193,7 +2190,6 @@ async def query_answer(request: QueryRequest):
     resp = timed_call(
         timings_ms,
         "ddl_retrieval",
-        call_counts=stage_call_counts,
         retrieve_ddl_context,
         text_collection,
         query_for_retrieval,
@@ -2295,7 +2291,6 @@ async def query_answer(request: QueryRequest):
     execution = timed_call(
         timings_ms,
         "sql_execution",
-        call_counts=stage_call_counts,
         execute_sql,
         active_query_resource,
         rag_response.sql,
@@ -2320,7 +2315,6 @@ async def query_answer(request: QueryRequest):
     result_check = timed_call(
         timings_ms,
         "result_guardrail",
-        call_counts=stage_call_counts,
         check_result_stage,
         rows,
         optimized_query,
@@ -2329,17 +2323,16 @@ async def query_answer(request: QueryRequest):
     answer_text = timed_call(
         timings_ms,
         "answer_synthesis",
-        call_counts=stage_call_counts,
         synthesize_answer,
         answer_llm,
         request.question,
         rag_response.sql,
         rows,
+        call_counts=stage_call_counts,
     )
     groundedness = timed_call(
         timings_ms,
         "groundedness",
-        call_counts=stage_call_counts,
         check_groundedness_stage,
         answer_text,
         rows,
@@ -2351,18 +2344,17 @@ async def query_answer(request: QueryRequest):
         answer_text = timed_call(
             timings_ms,
             "answer_synthesis",
-        call_counts=stage_call_counts,
             synthesize_answer,
             answer_llm,
             request.question,
             rag_response.sql,
             rows,
+            call_counts=stage_call_counts,
             strict_numbers=True,
         )
         groundedness = timed_call(
             timings_ms,
             "groundedness",
-        call_counts=stage_call_counts,
             check_groundedness_stage,
             answer_text,
             rows,
