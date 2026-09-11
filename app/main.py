@@ -2294,13 +2294,18 @@ async def query_answer(request: QueryRequest):
             "SQL query backend is not configured.",
         )
 
+    execution_kwargs = (
+        {"stage_timings_ms": timings_ms}
+        if isinstance(active_query_resource, QueryRuntime)
+        else {}
+    )
     execution = timed_call(
         timings_ms,
         "sql_execution",
         execute_sql,
         active_query_resource,
         rag_response.sql,
-        stage_timings_ms=timings_ms,
+        **execution_kwargs,
     )
 
     if "error" in execution:
