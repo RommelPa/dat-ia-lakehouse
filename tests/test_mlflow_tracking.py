@@ -62,6 +62,8 @@ def _report() -> dict:
             "backend": "databricks",
             "database": "connected",
             "optimizer_mode": "rule_based",
+            "gemini_max_retries": 2,
+            "gemini_timeout_seconds": 30.0,
         },
         "summary": {
             "metrics": {
@@ -115,6 +117,8 @@ def test_report_params_keep_low_cardinality_metadata() -> None:
     assert params["dataset_version"] == "2.1.0"
     assert params["ready_backend"] == "databricks"
     assert params["ready_optimizer_mode"] == "rule_based"
+    assert params["ready_gemini_max_retries"] == 2
+    assert params["ready_gemini_timeout_seconds"] == 30.0
     assert params["override_count"] == 2
     assert params["override_case_ids"] == "golden_017,golden_022"
     assert params["runner_error_case_ids"] == "golden_011"
