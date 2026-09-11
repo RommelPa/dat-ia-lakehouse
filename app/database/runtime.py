@@ -6,6 +6,7 @@ Databricks usa ``DatabricksExecutor`` y omite por ahora el dry-run específico
 del motor durante la validación determinística.
 """
 
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,10 +40,20 @@ class QueryRuntime:
             return str(self.validation_db.dialect)
         return "databricks"
 
-    def execute(self, sql_text: str, row_limit: int = 200) -> dict[str, Any]:
+    def execute(
+        self,
+        sql_text: str,
+        row_limit: int = 200,
+        *,
+        stage_timings_ms: MutableMapping[str, float] | None = None,
+    ) -> dict[str, Any]:
         """Ejecuta SQL de solo lectura con un contrato común de salida."""
         if self.name == "databricks":
-            return self.executor.execute(sql_text, row_limit=row_limit)
+            return self.executor.execute(
+                sql_text,
+                row_limit=row_limit,
+                timings_ms=stage_timings_ms,
+            )
 
         return _execute_postgres(self.validation_db, sql_text, row_limit=row_limit)
 
