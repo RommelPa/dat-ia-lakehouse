@@ -25,6 +25,11 @@ class QueryRuntime:
     validation_db: SQLDatabase | None = None
 
     @property
+    def sql_dialect(self) -> str:
+        """Dialecto SQL canónico usado por generación y validación."""
+        return "postgres" if self.name == "postgres" else "databricks"
+
+    @property
     def dialect(self) -> str:
         """Nombre de motor mostrado en health/ready y observabilidad."""
         if self.name == "postgres" and self.validation_db is not None:
