@@ -4,7 +4,9 @@ from scripts.benchmark_query_backends import (
     DEFAULT_DATABRICKS_OVERRIDES_PATH,
     _load_databricks_overrides,
 )
+from scripts import benchmark_text_to_sql as benchmark_module
 from scripts.benchmark_text_to_sql import (
+    _track_with_mlflow,
     effective_reference_outputs,
     evaluate_case_output,
 )
@@ -110,3 +112,69 @@ def test_evaluate_case_output_reports_canonical_and_effective_result_separately(
     assert metrics["sql_read_only"] is True
     assert metrics["canonical_result_match"] is False
     assert metrics["effective_result_match"] is True
+
+
+def test_track_with_mlflow_is_disabled_by_default(tmp_path, monkeypatch) -> None:
+    called = {"value": False}
+
+    def fake_log(*args, **kwargs):
+        called["value"] = True
+        return "unexpected"
+
+    monkeypatch.setattr(benchmark_module, "log_benchmark_report", fake_log)
+
+    run_id = _track_with_mlflow(
+        {"summary": {}},
+        report_path=tmp_path / "report.json",
+        enabled=False,
+        tracking_uri="file:./mlruns",
+        experiment_name="dat_ia_text_to_sql",
+        run_name=None,
+    )
+
+    assert run_id is None
+    assert called["value"] is False
+
+
+def test_track_with_mlflow_forwards_tracking_configuration(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def fake_log(
+        report,
+        *,
+        report_path,
+        tracking_uri,
+        experiment_name,
+        run_name,
+    ):
+        captured["report"] = report
+        captured["report_path"] = report_path
+        captured["tracking_uri"] = tracking_uri
+        captured["experiment_name"] = experiment_name
+        captured["run_name"] = run_name
+        return "run-456"
+
+    monkeypatch.setattr(benchmark_module, "log_benchmark_report", fake_log)
+    report = {"summary": {}}
+    report_path = tmp_path / "report.json"
+
+    run_id = _track_with_mlflow(
+        report,
+        report_path=report_path,
+        enabled=True,
+        tracking_uri="file:./mlruns-test",
+        experiment_name="experiment-test",
+        run_name="run-test",
+    )
+
+    assert run_id == "run-456"
+    assert captured == {
+        "report": report,
+        "report_path": report_path,
+        "tracking_uri": "file:./mlruns-test",
+        "experiment_name": "experiment-test",
+        "run_name": "run-test",
+    }
