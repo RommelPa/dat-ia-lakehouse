@@ -145,3 +145,41 @@ def test_execute_accepts_read_only_cte() -> None:
     assert cursor.executed_sql == sql
     assert cursor.closed is True
     assert connection.closed is True
+
+
+def test_execute_records_databricks_substep_timings(monkeypatch) -> None:
+    from app.database import databricks as databricks_module
+
+    cursor = FakeCursor(
+        rows=[(1,)],
+        description=[("value",)],
+    )
+    executor, _, _ = build_executor(cursor)
+    ticks = iter([
+        1.0, 1.010,
+        2.0, 2.020,
+        3.0, 3.030,
+        4.0, 4.040,
+        5.0, 5.005,
+        6.0, 6.006,
+    ])
+    monkeypatch.setattr(
+        databricks_module.time,
+        "perf_counter",
+        lambda: next(ticks),
+    )
+    timings = {}
+
+    result = executor.execute(
+        "SELECT 1 AS value",
+        timings_ms=timings,
+    )
+
+    assert result == {"rows": [{"value": 1}]}
+    assert timings == {
+        "databricks_connect": 10.0,
+        "databricks_cursor": 20.0,
+        "databricks_execute": 30.0,
+        "databricks_fetch": 40.0,
+        "databricks_close": 11.0,
+    }
