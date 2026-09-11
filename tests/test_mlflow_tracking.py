@@ -1,7 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from app.observability.mlflow_tracking import (
     _report_params,
