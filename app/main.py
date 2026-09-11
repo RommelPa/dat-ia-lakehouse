@@ -478,6 +478,7 @@ class AnswerResponse(BaseModel):
     optimized: QueryOptimizeResponse | None = None
     retrieval: RetrievalInfo | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)
+    stage_call_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class _AnswerPayload(BaseModel):
@@ -1346,6 +1347,7 @@ def generate_validated_sql(
     table_policies: str = "",
     business_rules_text: str = "",
     timings_ms: dict[str, float] | None = None,
+    stage_call_counts: dict[str, int] | None = None,
 ) -> tuple[RAGResponse, SqlVerdict | None, int]:
     """Genera SQL con hasta `max_attempts` intentos, validando y juzgando cada uno.
 
@@ -1391,6 +1393,7 @@ def generate_validated_sql(
         rag_response = timed_call(
             timings_ms,
             "sql_generation",
+            call_counts=stage_call_counts,
             build_rag_response,
             question,
             ddl,
@@ -1416,6 +1419,7 @@ def generate_validated_sql(
         validation = timed_call(
             timings_ms,
             "sql_validation",
+            call_counts=stage_call_counts,
             validate_sql_stage,
             rag_response.sql,
             allowed_tables,
@@ -1440,6 +1444,7 @@ def generate_validated_sql(
         verdict = timed_call(
             timings_ms,
             "sql_judgement",
+            call_counts=stage_call_counts,
             judge_sql_stage,
             optimized_query,
             rag_response.sql,
@@ -2108,9 +2113,11 @@ async def query_answer(request: QueryRequest):
     llamarlos aparte para esto).
     """
     timings_ms: dict[str, float] = {}
+    stage_call_counts: dict[str, int] = {}
     label, score = timed_call(
         timings_ms,
         "input_shield",
+        call_counts=stage_call_counts,
         classify_shield,
         request.question,
     )
@@ -2128,6 +2135,7 @@ async def query_answer(request: QueryRequest):
             status="blocked",
             shield=shield_info,
             timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     if text_collection is None or text_collection._collection.count() == 0:
@@ -2139,12 +2147,14 @@ async def query_answer(request: QueryRequest):
             status="prototype",
             shield=shield_info,
             timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     try:
         optimized_query = timed_call(
             timings_ms,
             "optimizer",
+        call_counts=stage_call_counts,
             optimize_query_stage,
             request.question,
             llm=optimizer_llm,
@@ -2161,6 +2171,7 @@ async def query_answer(request: QueryRequest):
     memory_examples = timed_call(
         timings_ms,
         "memory_retrieval",
+        call_counts=stage_call_counts,
         _search_query_memory_v2_examples,
         optimized_query,
         n_results=2,
@@ -2182,6 +2193,7 @@ async def query_answer(request: QueryRequest):
     resp = timed_call(
         timings_ms,
         "ddl_retrieval",
+        call_counts=stage_call_counts,
         retrieve_ddl_context,
         text_collection,
         query_for_retrieval,
@@ -2213,6 +2225,7 @@ async def query_answer(request: QueryRequest):
             optimized=optimized_response,
             retrieval=retrieval_info,
             timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     rag_response, verdict, attempts = generate_validated_sql(
@@ -2226,6 +2239,7 @@ async def query_answer(request: QueryRequest):
         table_policies=table_policies,
         business_rules_text=business_rules_text,
         timings_ms=timings_ms,
+        stage_call_counts=stage_call_counts,
     )
 
     if rag_response.sources == "":
@@ -2240,6 +2254,7 @@ async def query_answer(request: QueryRequest):
             optimized=optimized_response,
             retrieval=retrieval_info,
             timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     approved = verdict is not None and verdict.is_valid and verdict.answers_question
@@ -2262,6 +2277,7 @@ async def query_answer(request: QueryRequest):
             optimized=optimized_response,
             retrieval=retrieval_info,
             timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     active_query_resource = (
@@ -2279,6 +2295,7 @@ async def query_answer(request: QueryRequest):
     execution = timed_call(
         timings_ms,
         "sql_execution",
+        call_counts=stage_call_counts,
         execute_sql,
         active_query_resource,
         rag_response.sql,
@@ -2296,12 +2313,14 @@ async def query_answer(request: QueryRequest):
             optimized=optimized_response,
             retrieval=retrieval_info,
             timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     rows = execution["rows"]
     result_check = timed_call(
         timings_ms,
         "result_guardrail",
+        call_counts=stage_call_counts,
         check_result_stage,
         rows,
         optimized_query,
@@ -2310,6 +2329,7 @@ async def query_answer(request: QueryRequest):
     answer_text = timed_call(
         timings_ms,
         "answer_synthesis",
+        call_counts=stage_call_counts,
         synthesize_answer,
         answer_llm,
         request.question,
@@ -2319,6 +2339,7 @@ async def query_answer(request: QueryRequest):
     groundedness = timed_call(
         timings_ms,
         "groundedness",
+        call_counts=stage_call_counts,
         check_groundedness_stage,
         answer_text,
         rows,
@@ -2330,6 +2351,7 @@ async def query_answer(request: QueryRequest):
         answer_text = timed_call(
             timings_ms,
             "answer_synthesis",
+        call_counts=stage_call_counts,
             synthesize_answer,
             answer_llm,
             request.question,
@@ -2340,6 +2362,7 @@ async def query_answer(request: QueryRequest):
         groundedness = timed_call(
             timings_ms,
             "groundedness",
+        call_counts=stage_call_counts,
             check_groundedness_stage,
             answer_text,
             rows,
@@ -2394,6 +2417,7 @@ async def query_answer(request: QueryRequest):
         optimized=optimized_response,
         retrieval=retrieval_info,
         timings_ms=timings_ms,
+        stage_call_counts=stage_call_counts,
     )
 
 
