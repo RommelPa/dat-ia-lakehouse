@@ -1587,8 +1587,14 @@ def _mock_answer_pipeline(monkeypatch, *, shield_label: str = "SAFE"):
             source_schema="CREATE TABLE carriers ...",
         )
 
-    def fake_judge_sql(optimized_query, sql, llm, source_schema=""):
-        _ = optimized_query, sql, llm, source_schema
+    def fake_judge_sql(
+        optimized_query,
+        sql,
+        llm,
+        source_schema="",
+        dialect="postgres",
+    ):
+        _ = optimized_query, sql, llm, source_schema, dialect
         return main_module.SqlVerdict(
             issues=[],
             is_valid=True,
