@@ -40,6 +40,10 @@ chroma_data/
 logs/
 runs/
 mlruns/
+mlartifacts/
+mlflow.db
+mlflow.db-shm
+mlflow.db-wal
 .wandb/
 lightning_logs/
 

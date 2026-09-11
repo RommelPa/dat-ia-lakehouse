@@ -230,3 +230,47 @@ def test_sync_uses_stable_ids_and_creates_all_examples() -> None:
         isinstance(example["id"], UUID)
         for example in client.created_examples
     )
+
+
+def test_answer_contains_expected_facts_accepts_percentage_equivalent_of_rate() -> None:
+    outputs = {
+        "answer": (
+            "El transportista con la mayor tasa de puntualidad declarada es: "
+            "InterEstadual Cargo: 96,0 %"
+        )
+    }
+    reference = {
+        "expected_result": {
+            "row_count": 1,
+            "rows": [
+                {
+                    "carrier": "InterEstadual Cargo",
+                    "on_time_rate": 0.96,
+                }
+            ],
+            "numeric_tolerance": 0.01,
+        }
+    }
+
+    assert answer_contains_expected_facts(outputs, reference) is True
+
+
+def test_answer_contains_expected_facts_accepts_spanish_month_labels() -> None:
+    outputs = {
+        "answer": (
+            "Enero 2018: 7069 órdenes; "
+            "Febrero 2018: 6555 órdenes."
+        )
+    }
+    reference = {
+        "expected_result": {
+            "row_count": 2,
+            "rows": [
+                {"month": "2018-01", "order_count": 7069},
+                {"month": "2018-02", "order_count": 6555},
+            ],
+            "numeric_tolerance": 0.01,
+        }
+    }
+
+    assert answer_contains_expected_facts(outputs, reference) is True

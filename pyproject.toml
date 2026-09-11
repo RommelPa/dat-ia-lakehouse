@@ -37,6 +37,12 @@ dependencies = [
     "sqlglot>=30.13.0",
     # --- LangSmith ---
     "langsmith>=0.1.2",
+    "databricks-sql-connector>=4.5.0",
+]
+
+[project.optional-dependencies]
+observability = [
+    "mlflow>=3.16.0",
 ]
 
 [dependency-groups]

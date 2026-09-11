@@ -60,8 +60,15 @@ class _FakeJudgeSqlSequence:
         self.verdicts = verdicts
         self.calls = 0
 
-    def __call__(self, optimized_query, sql, llm, source_schema):
-        _ = optimized_query, sql, llm, source_schema
+    def __call__(
+        self,
+        optimized_query,
+        sql,
+        llm,
+        source_schema,
+        dialect="postgres",
+    ):
+        _ = optimized_query, sql, llm, source_schema, dialect
         verdict = self.verdicts[self.calls]
         self.calls += 1
         return verdict
@@ -199,3 +206,78 @@ def test_generate_validated_sql_returns_none_verdict_when_llm_does_not_know(monk
     assert verdict is None
     assert rag_response.sources == ""
     assert judge_fake.calls == 0
+
+
+def test_generate_validated_sql_applies_business_sql_normalization(monkeypatch) -> None:
+    optimized = _optimized_query(
+        original_question="¿Cuántas órdenes entregadas hubo por mes durante 2018?",
+        normalized_question="órdenes entregadas por mes durante 2018",
+        intent="temporal_trend",
+        operation="count",
+        metrics=["order_count"],
+        filters=[QueryFilter(field="order_status", operator="=", value="delivered")],
+        date_range={"start_date": "2018-01-01", "end_date": "2018-12-31"},
+        group_by=["month"],
+        suggested_tables=["olist_orders_dataset"],
+    )
+    build_fake = _FakeBuildRagResponseSequence(
+        [
+            _rag_response(
+                "SELECT DATE_TRUNC('month', order_delivered_customer_date) AS month, "
+                "COUNT(*) AS order_count FROM olist_orders_dataset "
+                "WHERE order_status = 'delivered' "
+                "AND order_delivered_customer_date >= '2018-01-01' "
+                "GROUP BY 1;",
+                sources="olist_orders_dataset",
+            )
+        ],
+    )
+    judge_fake = _FakeJudgeSqlSequence([_APPROVED])
+    monkeypatch.setattr(main_module, "build_rag_response", build_fake)
+    monkeypatch.setattr(main_module, "judge_sql", judge_fake)
+
+    rag_response, verdict, attempts = generate_validated_sql(
+        "pregunta",
+        "ddl",
+        optimized,
+        ["olist_orders_dataset"],
+        judge_llm=object(),
+        db=None,
+    )
+
+    assert attempts == 1
+    assert verdict is not None and verdict.is_valid
+    assert "order_delivered_customer_date" not in rag_response.sql
+    assert rag_response.sql.count("order_purchase_timestamp") == 2
+
+
+def test_validate_sql_stage_uses_active_databricks_dialect(monkeypatch) -> None:
+    captured = {}
+
+    def fake_validate_sql(sql, allowed_tables, db=None, dialect="postgres"):
+        captured["sql"] = sql
+        captured["allowed_tables"] = allowed_tables
+        captured["db"] = db
+        captured["dialect"] = dialect
+        return main_module.SqlValidation(
+            is_valid=True,
+            stage="ok",
+            error="",
+            sql=sql,
+        )
+
+    monkeypatch.setattr(main_module, "validate_sql", fake_validate_sql)
+    monkeypatch.setattr(
+        main_module,
+        "_active_sql_dialect",
+        lambda: "databricks",
+    )
+
+    result = main_module.validate_sql_stage(
+        "SELECT 1",
+        [],
+        db=None,
+    )
+
+    assert result.is_valid is True
+    assert captured["dialect"] == "databricks"

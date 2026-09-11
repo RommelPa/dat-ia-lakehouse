@@ -83,11 +83,26 @@ def test_evaluator_optimizer_functions_are_traceable() -> None:
         )
 
 
+
+def test_gemini_runtime_kwargs_use_settings(monkeypatch) -> None:
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module.SETTINGS, "gemini_max_retries", 2)
+    monkeypatch.setattr(main_module.SETTINGS, "gemini_timeout_seconds", 30.0)
+
+    assert main_module._gemini_runtime_kwargs() == {
+        "max_retries": 2,
+        "timeout": 30.0,
+    }
+
 def test_ready_returns_database_not_configured() -> None:
     response = client.get("/ready")
 
     assert response.status_code == 200
     assert response.json()["database"] == "not_configured"
+    assert response.json()["optimizer_mode"] == "hybrid"
+    assert response.json()["gemini_max_retries"] == 6
+    assert response.json()["gemini_timeout_seconds"] is None
     assert response.json()["langsmith"] == "not_connected"
 
 
@@ -586,6 +601,54 @@ def test_memory_v2_search_validated_filter_hides_provisional_sql(
     )
     assert "unverified_column" not in str(body)
 
+
+
+def test_optimize_query_stage_respects_rule_based_mode(monkeypatch) -> None:
+    from app import main as main_module
+
+    captured = {}
+
+    def fake_optimize_query(question, *, llm=None, use_llm=True):
+        captured["question"] = question
+        captured["llm"] = llm
+        captured["use_llm"] = use_llm
+        return OptimizedQuery(
+            original_question=question,
+            normalized_question=question,
+            intent="count",
+            operation="count",
+            metrics=[],
+            filters=[],
+            date_range=None,
+            group_by=[],
+            context=[],
+            suggested_tables=[],
+            optimizer="rule_based",
+        )
+
+    monkeypatch.setattr(
+        main_module.SETTINGS,
+        "query_optimizer_mode",
+        "rule_based",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "optimize_query",
+        fake_optimize_query,
+    )
+
+    llm = object()
+    result = main_module.optimize_query_stage(
+        "¿Cuántas órdenes hay?",
+        llm=llm,
+    )
+
+    assert result.optimizer == "rule_based"
+    assert captured == {
+        "question": "¿Cuántas órdenes hay?",
+        "llm": llm,
+        "use_llm": False,
+    }
 
 def test_query_optimize_returns_normalized_response() -> None:
     response = client.post(
@@ -1129,8 +1192,9 @@ def test_query_json_uses_normalized_for_retrieval_and_original_for_generation(
         collection,
         query: str,
         distance_threshold: float = 0.9,
+        excluded_tables: list[str] | None = None,
     ):
-        _ = collection
+        _ = collection, excluded_tables
         captured["retrieval_query"] = query
         captured["distance_threshold"] = distance_threshold
 
@@ -1219,8 +1283,9 @@ def _mock_query_json_memory_pipeline(
         collection,
         query: str,
         distance_threshold: float = 0.7,
+        excluded_tables: list[str] | None = None,
     ):
-        _ = collection, query, distance_threshold
+        _ = collection, query, distance_threshold, excluded_tables
         return main_module.EmbeddingsResponse(
             tabla=["carriers"],
             descripcion=[
@@ -1553,8 +1618,13 @@ class FakeSqlDatabase:
 def _mock_answer_pipeline(monkeypatch, *, shield_label: str = "SAFE"):
     from app import main as main_module
 
-    def fake_query_embeddings(collection, query: str, distance_threshold: float = 0.9):
-        _ = collection, distance_threshold
+    def fake_query_embeddings(
+        collection,
+        query: str,
+        distance_threshold: float = 0.9,
+        excluded_tables: list[str] | None = None,
+    ):
+        _ = collection, distance_threshold, excluded_tables
         return main_module.EmbeddingsResponse(
             tabla=["carriers"],
             descripcion=["Transportistas y tasa de cumplimiento."],
@@ -1580,8 +1650,14 @@ def _mock_answer_pipeline(monkeypatch, *, shield_label: str = "SAFE"):
             source_schema="CREATE TABLE carriers ...",
         )
 
-    def fake_judge_sql(optimized_query, sql, llm, source_schema=""):
-        _ = optimized_query, sql, llm, source_schema
+    def fake_judge_sql(
+        optimized_query,
+        sql,
+        llm,
+        source_schema="",
+        dialect="postgres",
+    ):
+        _ = optimized_query, sql, llm, source_schema, dialect
         return main_module.SqlVerdict(
             issues=[],
             is_valid=True,
@@ -1681,6 +1757,18 @@ def test_query_answer_full_flow_success(monkeypatch) -> None:
     assert "carriers" in body["optimized"]["suggested_tables"]
     assert body["retrieval"]["distance_threshold"] == 0.7
     assert body["retrieval"]["selected_tables"] == ["carriers"]
+    assert "input_shield" in body["timings_ms"]
+    assert "optimizer" in body["timings_ms"]
+    assert "ddl_retrieval" in body["timings_ms"]
+    assert "sql_generation" in body["timings_ms"]
+    assert "sql_validation" in body["timings_ms"]
+    assert "sql_judgement" in body["timings_ms"]
+    assert "sql_execution" in body["timings_ms"]
+    assert "answer_synthesis" in body["timings_ms"]
+    assert body["stage_call_counts"]["optimizer"] == 1
+    assert body["stage_call_counts"]["sql_generation"] == 1
+    assert body["stage_call_counts"]["sql_judgement"] == 1
+    assert body["stage_call_counts"]["answer_synthesis"] == 1
 
 
 def test_query_answer_warns_when_result_is_truncated(monkeypatch) -> None:
@@ -2119,8 +2207,13 @@ def test_query_answer_returns_no_context_status_when_no_table_found(
 
     _mock_answer_pipeline(monkeypatch)
 
-    def fake_query_embeddings(collection, query: str, distance_threshold: float = 0.7):
-        _ = collection, query, distance_threshold
+    def fake_query_embeddings(
+        collection,
+        query: str,
+        distance_threshold: float = 0.7,
+        excluded_tables: list[str] | None = None,
+    ):
+        _ = collection, query, distance_threshold, excluded_tables
         return main_module.EmbeddingsResponse(
             tabla=[],
             descripcion=[],
@@ -2282,3 +2375,201 @@ def test_query_answer_saves_when_retrieved_sql_does_not_match(
     assert saved_record.sql.startswith(
         "SELECT carrier_name"
     )
+
+def test_ready_reports_databricks_query_runtime(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    runtime = SimpleNamespace(
+        name="databricks",
+        dialect="databricks",
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "query_runtime",
+        runtime,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "sql_database",
+        None,
+    )
+
+    response = client.get("/ready")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["database"] == "connected"
+    assert body["backend"] == "databricks"
+    assert "databricks" in body["message"].lower()
+
+
+def test_query_answer_uses_query_runtime_when_available(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    _mock_answer_pipeline(monkeypatch)
+
+    runtime = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        main_module,
+        "query_runtime",
+        runtime,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "sql_database",
+        None,
+    )
+
+    def fake_execute_sql(
+        db,
+        sql,
+        row_limit=200,
+    ):
+        captured["resource"] = db
+        captured["sql"] = sql
+        captured["row_limit"] = row_limit
+
+        return {
+            "rows": [
+                {
+                    "carrier_name": "DHL",
+                    "on_time_rate": 0.97,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        main_module,
+        "execute_sql",
+        fake_execute_sql,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "synthesize_answer",
+        lambda llm, question, sql, rows: (
+            "El transportista con mejor cumplimiento es DHL."
+        ),
+    )
+
+    response = client.post(
+        "/query/answer",
+        json={
+            "question": (
+                "Que empresa de transporte tiene "
+                "mejor cumplimiento?"
+            )
+        },
+    )
+
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "success"
+    assert captured["resource"] is runtime
+    assert captured["sql"].startswith(
+        "SELECT carrier_name FROM carriers"
+    )
+
+
+def test_build_rag_response_includes_active_sql_dialect(monkeypatch) -> None:
+    from app import main as main_module
+
+    captured = {}
+
+    class FakeStructuredLlm:
+        def invoke(self, prompt):
+            captured["prompt"] = prompt
+            return main_module.RAGResponse(
+                sql="SELECT 1",
+                sources="",
+                confidence_note="",
+                status="success",
+            )
+
+    monkeypatch.setattr(main_module, "rag_llm", FakeStructuredLlm())
+    monkeypatch.setattr(
+        main_module,
+        "_active_sql_dialect",
+        lambda: "databricks",
+    )
+
+    main_module.build_rag_response(
+        "pregunta",
+        "CREATE TABLE demo (id INT);",
+    )
+
+    assert "dialect: databricks" in captured["prompt"]
+    assert "Use Databricks SQL syntax and functions." in captured["prompt"]
+
+
+def test_query_answer_returns_structured_provider_error_for_sql_generation(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    _mock_answer_pipeline(monkeypatch)
+
+    def fail_generation(*args, **kwargs):
+        _ = args, kwargs
+        raise TimeoutError("provider detail must stay private")
+
+    monkeypatch.setattr(main_module, "build_rag_response", fail_generation)
+
+    response = client.post(
+        "/query/answer",
+        json={"question": "Que empresa de transporte tiene mejor cumplimiento?"},
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "provider_error"
+    assert body["error_stage"] == "sql_generation"
+    assert body["error_type"] == "TimeoutError"
+    assert "sql_generation" in body["timings_ms"]
+    assert body["stage_call_counts"]["sql_generation"] == 1
+    assert "provider detail" not in body["answer"]
+
+
+def test_query_answer_returns_structured_provider_error_for_answer_synthesis(
+    monkeypatch,
+) -> None:
+    from app import main as main_module
+
+    _mock_answer_pipeline(monkeypatch)
+
+    monkeypatch.setattr(
+        main_module,
+        "execute_sql",
+        lambda db, sql, row_limit=200: {
+            "rows": [{"carrier_name": "DHL", "on_time_rate": 0.97}]
+        },
+    )
+
+    def fail_answer(*args, **kwargs):
+        _ = args, kwargs
+        raise ConnectionError("sensitive transport detail")
+
+    monkeypatch.setattr(main_module, "synthesize_answer", fail_answer)
+
+    response = client.post(
+        "/query/answer",
+        json={"question": "Que empresa de transporte tiene mejor cumplimiento?"},
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "provider_error"
+    assert body["error_stage"] == "answer_synthesis"
+    assert body["error_type"] == "ConnectionError"
+    assert body["sql"].startswith("SELECT carrier_name")
+    assert body["sources"] == "carriers"
+    assert "answer_synthesis" in body["timings_ms"]
+    assert body["stage_call_counts"]["answer_synthesis"] == 1
+    assert "sensitive transport detail" not in body["answer"]

@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 
 from app.optimizer.query_optimizer import OptimizedQuery
 from app.validation.sql_validator import DEFAULT_ROW_LIMIT
@@ -66,32 +67,129 @@ def _parse_answer_number(raw: str) -> float:
         else:
             normalized = normalized.replace(",", "")
     elif "," in normalized:
-        decimal_part = normalized.rsplit(",", 1)[1]
-        if normalized.startswith("0,") or len(decimal_part) <= 2:
-            normalized = normalized.replace(",", ".")
-        else:
-            normalized = normalized.replace(",", "")
+        # La coma se interpreta primero como separador decimal. Cuando hay
+        # exactamente tres dígitos finales, _parse_answer_number_candidates
+        # añade además la interpretación alternativa de miles.
+        normalized = normalized.replace(",", ".")
 
     return float(normalized)
 
 
+def _parse_answer_number_candidates(raw: str) -> set[float]:
+    """Devuelve interpretaciones plausibles de un número redactado.
+
+    Un único separador seguido por tres dígitos es ambiguo en texto humano:
+    ``99.441`` puede representar 99.441 o 99 441 según el locale. En vez de
+    imponer una convención global, groundedness prueba ambas interpretaciones
+    y acepta únicamente la que esté respaldada por las filas ejecutadas.
+
+    Los valores que empiezan por cero, como ``0.960``, no generan una
+    interpretación de miles porque representan de forma natural una fracción.
+    """
+    normalized = raw.strip()
+    candidates = {_parse_answer_number(normalized)}
+
+    separators = [separator for separator in (".", ",") if separator in normalized]
+    if len(separators) != 1:
+        return candidates
+
+    separator = separators[0]
+    if normalized.count(separator) != 1:
+        return candidates
+
+    integer_part, trailing_part = normalized.split(separator, 1)
+    if (
+        integer_part != "0"
+        and integer_part.isdigit()
+        and len(trailing_part) == 3
+        and trailing_part.isdigit()
+    ):
+        candidates.add(float(integer_part + trailing_part))
+
+    return candidates
+
+
+def _numbers_match(candidate: float, value: float, tolerance: float) -> bool:
+    """Compara números sin permitir tolerancia relativa sobre conteos enteros.
+
+    Los conteos deben coincidir exactamente: una tolerancia relativa de 1 %
+    haría que 99 441 pareciera compatible con muchos enteros cercanos. Para
+    valores con parte decimal se conserva la tolerancia histórica, necesaria
+    para redondeos como 0.9701 -> 0.97.
+    """
+    if candidate.is_integer() and value.is_integer():
+        return candidate == value
+
+    return abs(candidate - value) <= tolerance * max(abs(value), 1)
+
+
 def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
-    """Obtiene valores crudos y equivalentes porcentuales de las filas."""
+    """Obtiene valores crudos, porcentuales y años presentes en las filas."""
     raw_values: set[float] = set()
     percentage_values: set[float] = set()
 
     for row in rows:
         for key, value in row.items():
-            if not isinstance(value, (int, float, Decimal)):
+            numeric_value: float | None = None
+
+            if isinstance(value, (int, float, Decimal)):
+                numeric_value = float(value)
+            elif isinstance(value, str):
+                try:
+                    numeric_value = float(Decimal(value.strip()))
+                except (InvalidOperation, ValueError):
+                    numeric_value = None
+            elif isinstance(value, (date, datetime)):
+                raw_values.add(float(value.year))
+
+            if numeric_value is not None:
+                raw_values.add(numeric_value)
+
+                if _looks_like_percentage_key(str(key)):
+                    if abs(numeric_value) <= 1:
+                        percentage_values.add(numeric_value * 100)
+                    else:
+                        percentage_values.add(numeric_value)
                 continue
 
-            numeric_value = float(value)
-            raw_values.add(numeric_value)
-
-            if _looks_like_percentage_key(str(key)) and abs(numeric_value) <= 1:
-                percentage_values.add(numeric_value * 100)
+            if isinstance(value, str):
+                date_match = re.match(r"^(?P<year>\d{4})-\d{2}-\d{2}", value.strip())
+                if date_match:
+                    raw_values.add(float(date_match.group("year")))
 
     return raw_values, percentage_values
+
+
+_NUMBER_PATTERN = re.compile(
+    r"(?<![\w])(?P<number>\d+(?:[.,]\d+)?)(?P<percent>\s*%)?(?![\w])"
+)
+
+
+def _numeric_values_from_text(text: str) -> tuple[set[float], set[float]]:
+    """Extrae números explícitos del texto sin fragmentar identificadores."""
+    raw_values: set[float] = set()
+    percentage_values: set[float] = set()
+
+    for match in _NUMBER_PATTERN.finditer(text):
+        candidates = _parse_answer_number_candidates(match.group("number"))
+        target = percentage_values if match.group("percent") else raw_values
+        target.update(candidates)
+
+    return raw_values, percentage_values
+
+
+def _question_requests_percentage(question: str) -> bool:
+    """Detecta si la pregunta pide explícitamente una tasa o porcentaje."""
+    if "%" in question:
+        return True
+
+    tokens = set(
+        re.findall(
+            r"[a-zA-ZáéíóúñÁÉÍÓÚÑ]+",
+            question.casefold(),
+        )
+    )
+    return bool(tokens & _PERCENTAGE_HINTS)
 
 
 def _find_metric_column(metric: str, row: dict) -> str | None:
@@ -166,36 +264,60 @@ def check_groundedness(
     answer: str,
     rows: list[dict],
     tolerance: float = 0.01,
+    *,
+    question: str = "",
 ) -> GroundednessCheck:
     """Verifica que cada número del texto exista entre los valores de las filas.
 
     Extrae números del texto con una regex y los compara contra los
-    valores numéricos de `rows`, con tolerancia de redondeo. Tiene falsos
-    positivos esperables (números de fila, conteos, porcentajes derivados
-    de dos columnas): por diseño es una señal de sospecha para disparar
-    una única regeneración de la redacción, no un bloqueo automático.
+    valores numéricos de `rows`, con tolerancia de redondeo. Los números con
+    un único separador y tres dígitos finales se consideran ambiguos entre
+    decimal y miles; se prueban ambas lecturas y solo se acepta una si está
+    respaldada por los datos ejecutados.
+
+    Los conteos enteros deben coincidir exactamente; la tolerancia relativa
+    se aplica únicamente cuando al menos uno de los valores tiene parte
+    decimal. Esto evita falsos negativos en redondeos sin aceptar conteos
+    cercanos pero incorrectos.
+
+    También acepta números explícitos de la pregunta cuando la respuesta solo
+    repite una restricción del usuario (por ejemplo, "top 5" o "al menos 100").
+    Los dígitos incrustados en identificadores alfanuméricos no se consideran
+    números independientes.
 
     Args:
         answer: texto redactado por `synthesize_answer`.
         rows: filas reales que `answer` debería estar describiendo.
         tolerance: fracción de tolerancia relativa al comparar (0.01 = 1%).
+        question: pregunta original; sus números explícitos pueden respaldar
+            restricciones repetidas por la respuesta.
 
     Returns:
         `GroundednessCheck` con los números del texto que no encontraron
         respaldo en `rows`.
     """
-    number_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)(?P<percent>\s*%)?")
-    numbers_in_answer = list(number_pattern.finditer(answer))
+    numbers_in_answer = list(_NUMBER_PATTERN.finditer(answer))
     row_values, percentage_values = _numeric_values(rows)
+    question_values, question_percentage_values = _numeric_values_from_text(question)
+
+    # Algunas consultas devuelven un porcentaje ya escalado (8.11) bajo un
+    # alias no porcentual. Si la pregunta pide explícitamente un porcentaje,
+    # ese valor crudo también puede respaldar una redacción con "%".
+    if _question_requests_percentage(question) and len(row_values) == 1:
+        percentage_values.update(row_values)
 
     unsupported = []
     for match in numbers_in_answer:
         raw = match.group("number")
-        candidate = _parse_answer_number(raw)
-        candidate_values = percentage_values if match.group("percent") else row_values
+        candidates = _parse_answer_number_candidates(raw)
+        if match.group("percent"):
+            candidate_values = percentage_values | question_percentage_values
+        else:
+            candidate_values = row_values | question_values
 
         if not any(
-            abs(candidate - value) <= tolerance * max(abs(value), 1)
+            _numbers_match(candidate, value, tolerance)
+            for candidate in candidates
             for value in candidate_values
         ):
             unsupported.append(raw + (" %" if match.group("percent") else ""))

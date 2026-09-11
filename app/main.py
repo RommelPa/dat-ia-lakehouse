@@ -16,7 +16,8 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from pydantic import BaseModel, Field
 
-from app.db.connect_db import create_db_engine
+from app.core.config import Settings
+from app.database.runtime import QueryRuntime, create_query_runtime
 from app.formatting import format_result_table
 from app.memory.query_memory_v2 import (
     QUERY_MEMORY_V2_DISTANCE_THRESHOLD,
@@ -31,10 +32,12 @@ from app.observability import (
     build_trace_metadata,
     build_trace_tags,
     langsmith_connection_status,
+    StageExecutionError,
+    timed_call,
     traceable_stage,
 )
 
-from app.context.business_rules import match_business_rules, render_business_rules
+from app.context.business_rules import excluded_tables, match_business_rules, render_business_rules
 from app.context.semantic_policies import build_semantic_policy_section
 from app.optimizer.query_optimizer import OptimizedQuery, optimize_query
 from app.validation.result_guardrail import (
@@ -43,7 +46,8 @@ from app.validation.result_guardrail import (
     check_groundedness,
     check_result,
 )
-from app.validation.sql_judge import SqlVerdict, judge_sql
+from app.validation.input_guard import should_block_input
+from app.validation.sql_judge import SqlVerdict, judge_sql, normalize_business_sql
 from app.validation.sql_validator import SqlValidation, validate_sql
 
 import torch
@@ -56,6 +60,19 @@ from transformers import (
 # ---------------------------------------------------------------------------
 # Configuración
 # ---------------------------------------------------------------------------
+
+SETTINGS = Settings()
+
+
+def _active_sql_dialect() -> str:
+    """Dialecto SQL canónico del backend activo.
+
+    Durante tests y la migración incremental puede existir un runtime fake
+    sin la propiedad nueva; en ese caso se conserva el dialecto configurado
+    como fallback compatible.
+    """
+    runtime_dialect = getattr(query_runtime, "sql_dialect", None)
+    return str(runtime_dialect or SETTINGS.sql_dialect)
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -87,7 +104,8 @@ query_memory_v2_collection = None
 image_collection = None
 shield_tokenizer = None
 shield_model = None
-sql_database: SQLDatabase = None  # None si DATABASE_URL no está configurada
+sql_database: SQLDatabase = None  # PostgreSQL compatibility and dry-run
+query_runtime: QueryRuntime | None = None
 
 
 def _trace_metadata(
@@ -127,6 +145,14 @@ def _trace_tags(
     )
 
 
+def _gemini_runtime_kwargs() -> dict[str, Any]:
+    """Opciones comunes de resiliencia para las llamadas Gemini."""
+    return {
+        "max_retries": SETTINGS.gemini_max_retries,
+        "timeout": SETTINGS.gemini_timeout_seconds,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Lifespan: inicialización al arrancar la app
 # ---------------------------------------------------------------------------
@@ -138,8 +164,7 @@ async def lifespan(app: FastAPI):
     global rag_llm, optimizer_llm, answer_llm, judge_llm, embeddings_model
     global chroma_client, text_collection, image_collection
     global query_memory_v2_collection
-    global shield_tokenizer, shield_model, sql_database
-
+    global shield_tokenizer, shield_model, sql_database, query_runtime
     langsmith_status = langsmith_connection_status()
     print(f"[startup] LangSmith tracing: {langsmith_status}.")
 
@@ -165,6 +190,7 @@ async def lifespan(app: FastAPI):
             google_api_key=GOOGLE_API_KEY,
             temperature=0.0,
             max_output_tokens=600,
+            **_gemini_runtime_kwargs(),
         ).with_structured_output(RAGResponse)
         print(f"[startup] Generador SQL inicializado con Google Gemini: {MODEL}")
 
@@ -174,6 +200,7 @@ async def lifespan(app: FastAPI):
         google_api_key=GOOGLE_API_KEY,
         temperature=0.0,
         max_output_tokens=700,
+        **_gemini_runtime_kwargs(),
     )
     print("[startup] LangChain ChatGoogleGenerativeAI (optimizer) inicializado.")
 
@@ -183,6 +210,7 @@ async def lifespan(app: FastAPI):
         google_api_key=GOOGLE_API_KEY,
         temperature=0.0,
         max_output_tokens=600,
+        **_gemini_runtime_kwargs(),
     )
     print("[startup] LangChain ChatGoogleGenerativeAI (answer) inicializado.")
 
@@ -194,6 +222,7 @@ async def lifespan(app: FastAPI):
         google_api_key=GOOGLE_API_KEY,
         temperature=0.0,
         max_output_tokens=500,
+        **_gemini_runtime_kwargs(),
     )
     print("[startup] LangChain ChatGoogleGenerativeAI (judge) inicializado.")
 
@@ -234,24 +263,35 @@ async def lifespan(app: FastAPI):
     )
     # print(f"[startup] ChromaDB: {image_collection.count()} docs en vouchers_financieros.")
 
-    # Inicializar SQLDatabase (LangChain) contra Supabase/Postgres, si está configurada.
-    # Es opcional: si falla o no hay DATABASE_URL, /query/answer queda deshabilitado
-    # pero el resto de la app (generación de SQL sin ejecutar) sigue funcionando.
-    if DATABASE_URL:
+    # Initialize the configured query backend.
+    #
+    # PostgreSQL keeps SQLDatabase for EXPLAIN dry-run validation.
+    # Databricks opens its SQL connection lazily when a query executes.
+    if SETTINGS.query_backend == "postgres" and not DATABASE_URL:
+        query_runtime = None
+        sql_database = None
+        print(
+            "[startup] DATABASE_URL not configured: "
+            "/query/answer cannot execute SQL."
+        )
+    else:
         try:
-            db_engine = create_db_engine(DATABASE_URL)
-            sql_database = SQLDatabase(db_engine, lazy_table_reflection=True)
+            query_runtime = create_query_runtime(SETTINGS)
+            sql_database = query_runtime.validation_db
             print(
-                f"[startup] SQLDatabase conectado (dialecto: {sql_database.dialect})."
+                "[startup] Query backend configured: "
+                f"{query_runtime.name} "
+                f"(dialect: {query_runtime.dialect})."
             )
         except Exception as e:
-            print(f"[startup] ADVERTENCIA: No se pudo conectar a DATABASE_URL: {e}")
-    else:
-        print(
-            "[startup] DATABASE_URL no configurada: /query/answer no podrá ejecutar SQL."
-        )
+            query_runtime = None
+            sql_database = None
+            print(
+                "[startup] WARNING: could not initialize "
+                f"QUERY_BACKEND={SETTINGS.query_backend}: {e}"
+            )
 
-    # Ingesta automática
+    # Automatic ingestion
     if text_collection._collection.count() == 0:
         print(
             "[startup] Colección vacía. Iniciando ingesta automática desde data/ddl.json..."
@@ -302,7 +342,9 @@ async def lifespan(app: FastAPI):
 
     yield  # La app corre entre yield y el bloque de cleanup
 
-    # Cleanup (opcional aquí, ChromaDB persiste solo)
+    if query_runtime is not None:
+        query_runtime.close()
+
     print("[shutdown] Cerrando app.")
 
 
@@ -450,6 +492,40 @@ class AnswerResponse(BaseModel):
     shield: ShieldInfo | None = None
     optimized: QueryOptimizeResponse | None = None
     retrieval: RetrievalInfo | None = None
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+    stage_call_counts: dict[str, int] = Field(default_factory=dict)
+    error_stage: str | None = None
+    error_type: str | None = None
+
+
+def _pipeline_error_response(
+    exc: StageExecutionError,
+    *,
+    timings_ms: dict[str, float],
+    stage_call_counts: dict[str, int],
+    shield: ShieldInfo | None = None,
+    optimized: QueryOptimizeResponse | None = None,
+    retrieval: RetrievalInfo | None = None,
+    sql: str = "",
+    sources: str = "",
+    attempts: int = 0,
+) -> AnswerResponse:
+    """Devuelve diagnóstico seguro y estructurado para fallos de etapa."""
+    return AnswerResponse(
+        answer="El proveedor externo no pudo completar una etapa del pipeline.",
+        sql=sql,
+        data=[],
+        sources=sources,
+        status="provider_error",
+        attempts=attempts,
+        shield=shield,
+        optimized=optimized,
+        retrieval=retrieval,
+        timings_ms=timings_ms,
+        stage_call_counts=stage_call_counts,
+        error_stage=exc.stage,
+        error_type=exc.error_type,
+    )
 
 
 class _AnswerPayload(BaseModel):
@@ -660,7 +736,10 @@ def _decode_policies_from_metadata(metadata: dict) -> list[str]:
     tags=_trace_tags(operation="semantic_ddl_retrieval"),
 )
 def query_embeddings(
-    collection, query: str, distance_threshold: float = 0.7
+    collection,
+    query: str,
+    distance_threshold: float = 0.7,
+    excluded_tables: list[str] | None = None,
 ) -> EmbeddingsResponse:
     """
     Consulta vectorial filtrando por distancia semántica.
@@ -669,6 +748,12 @@ def query_embeddings(
     resultados = collection.similarity_search_with_score(
         query, k=10
     )  # trae más candidatos
+    excluded = {str(table).strip() for table in (excluded_tables or [])}
+    resultados = [
+        (doc, dist)
+        for doc, dist in resultados
+        if str(doc.metadata.get("nombre") or "").strip() not in excluded
+    ]
 
     # Candidatos crudos (antes de filtrar), para diagnóstico: si nada pasa
     # el umbral más abajo, esta lista es la única forma de ver qué tan
@@ -839,17 +924,24 @@ def retrieve_ddl_context(
     suggested_tables: list[str] | None = None,
     distance_threshold: float = 0.7,
     tool_logs: list[dict[str, Any]] | None = None,
+    excluded_tables: list[str] | None = None,
 ) -> EmbeddingsResponse:
     """Combina tablas sugeridas exactas y recuperación semántica."""
+    excluded = {str(table).strip() for table in (excluded_tables or [])}
     exact = _get_suggested_table_embeddings(
         collection,
-        suggested_tables,
+        [
+            table
+            for table in (suggested_tables or [])
+            if str(table).strip() not in excluded
+        ],
     )
 
     semantic = query_embeddings(
         collection,
         query,
         distance_threshold=distance_threshold,
+        excluded_tables=list(excluded),
     )
 
     raw_collection = getattr(
@@ -1221,10 +1313,22 @@ def build_rag_response(
     Do not repeat the same mistake.
     """
 
+    sql_dialect = _active_sql_dialect()
+    dialect_guidance = (
+        "Use Databricks SQL syntax and functions." 
+        if sql_dialect == "databricks"
+        else "Use PostgreSQL syntax and functions."
+    )
+
     augmented_prompt = f"""
     ### Task
     Generate a SQL query to answer [QUESTION]{question}[/QUESTION]
     {structure_section}
+    ### Target SQL dialect
+    - dialect: {sql_dialect}
+    - {dialect_guidance}
+    - Do not emit functions or syntax that belong only to another SQL dialect.
+
     ### Instructions
     - If you cannot answer the question with the available database schema,
       return 'I do not know'.
@@ -1289,6 +1393,8 @@ def generate_validated_sql(
     max_attempts: int = 2,
     table_policies: str = "",
     business_rules_text: str = "",
+    timings_ms: dict[str, float] | None = None,
+    stage_call_counts: dict[str, int] | None = None,
 ) -> tuple[RAGResponse, SqlVerdict | None, int]:
     """Genera SQL con hasta `max_attempts` intentos, validando y juzgando cada uno.
 
@@ -1331,20 +1437,42 @@ def generate_validated_sql(
     rag_response: RAGResponse | None = None
 
     for attempt in range(1, max_attempts + 1):
-        rag_response = build_rag_response(
+        rag_response = timed_call(
+            timings_ms,
+            "sql_generation",
+            build_rag_response,
             question,
             ddl,
+            call_counts=stage_call_counts,
             optimized_query=optimized_query,
             memory_examples=memory_examples,
             feedback=feedback,
             table_policies=table_policies,
             business_rules_text=business_rules_text,
+            wrap_exceptions=True,
         )
 
         if rag_response.sources == "":
             return rag_response, None, attempt
 
-        validation = validate_sql_stage(rag_response.sql, allowed_tables, db=db)
+        normalized_sql = normalize_business_sql(
+            optimized_query,
+            rag_response.sql,
+        )
+        if normalized_sql != rag_response.sql:
+            rag_response = rag_response.model_copy(
+                update={"sql": normalized_sql}
+            )
+
+        validation = timed_call(
+            timings_ms,
+            "sql_validation",
+            validate_sql_stage,
+            rag_response.sql,
+            allowed_tables,
+            db=db,
+            dialect=_active_sql_dialect(),
+        )
         if not validation.is_valid:
             feedback = SqlVerdict(
                 issues=[validation.error],
@@ -1360,7 +1488,18 @@ def generate_validated_sql(
         # string exacto que se validó.
         rag_response = rag_response.model_copy(update={"sql": validation.sql})
 
-        verdict = judge_sql_stage(optimized_query, rag_response.sql, judge_llm, source_schema=rag_response.source_schema,)
+        verdict = timed_call(
+            timings_ms,
+            "sql_judgement",
+            judge_sql_stage,
+            optimized_query,
+            rag_response.sql,
+            judge_llm,
+            call_counts=stage_call_counts,
+            source_schema=rag_response.source_schema,
+            dialect=_active_sql_dialect(),
+            wrap_exceptions=True,
+        )
         if verdict.is_valid and verdict.answers_question:
             return rag_response, verdict, attempt
 
@@ -1375,7 +1514,13 @@ def generate_validated_sql(
     metadata=_trace_metadata(operation="read_only_sql_execution"),
     tags=_trace_tags(operation="read_only_sql_execution"),
 )
-def execute_sql(db: SQLDatabase, sql: str, row_limit: int = 200) -> dict:
+def execute_sql(
+    db: SQLDatabase | QueryRuntime,
+    sql: str,
+    row_limit: int = 200,
+    *,
+    stage_timings_ms: dict[str, float] | None = None,
+) -> dict:
     """Ejecuta SQL de solo lectura contra Supabase con guardas de seguridad.
 
     Nunca lanza excepción: devuelve {"rows": [...]} en éxito o
@@ -1383,8 +1528,14 @@ def execute_sql(db: SQLDatabase, sql: str, row_limit: int = 200) -> dict:
     ejecutarse (defensa en profundidad, aunque el rol de BD ya sea de
     solo lectura).
     """
-    stripped = sql.strip().rstrip(";")
+    if isinstance(db, QueryRuntime):
+        return db.execute(
+            sql,
+            row_limit=row_limit,
+            stage_timings_ms=stage_timings_ms,
+        )
 
+    stripped = sql.strip().rstrip(";")
     if not re.match(r"(?is)^select\b", stripped):
         return {"error": "Solo se permiten sentencias SELECT."}
 
@@ -1518,25 +1669,19 @@ def synthesize_answer(
 @traceable_stage(
     name="dat-ia.optimizer.normalize-query",
     run_type="chain",
-    metadata=_trace_metadata(
-        operation="query_optimization",
-        llm_provider="google",
-        llm_model=MODEL,
-    ),
-    tags=_trace_tags(
-        operation="query_optimization",
-        llm_provider="google",
-    ),
+    metadata=_trace_metadata(operation="query_optimization"),
+    tags=_trace_tags(operation="query_optimization"),
 )
 def optimize_query_stage(
     question: str,
     *,
     llm=None,
 ) -> OptimizedQuery:
-    """Ejecuta el optimizador híbrido dentro del árbol de trazas."""
+    """Ejecuta el modo de optimizer configurado dentro del árbol de trazas."""
     return optimize_query(
         question,
         llm=llm,
+        use_llm=SETTINGS.query_optimizer_mode == "hybrid",
     )
 
 
@@ -1550,9 +1695,15 @@ def validate_sql_stage(
     sql: str,
     allowed_tables: list[str],
     db: SQLDatabase | None = None,
+    dialect: str | None = None,
 ) -> SqlValidation:
     """Ejecuta el validador determinístico dentro del árbol de trazas."""
-    return validate_sql(sql, allowed_tables, db=db)
+    return validate_sql(
+        sql,
+        allowed_tables,
+        db=db,
+        dialect=dialect or _active_sql_dialect(),
+    )
 
 
 @traceable_stage(
@@ -1573,9 +1724,16 @@ def judge_sql_stage(
     sql: str,
     llm: Any,
     source_schema: str = "",
+    dialect: str | None = None,
 ) -> SqlVerdict:
     """Ejecuta el juez LLM dentro del árbol de trazas."""
-    return judge_sql(optimized_query, sql, llm, source_schema=source_schema)
+    return judge_sql(
+        optimized_query,
+        sql,
+        llm,
+        source_schema=source_schema,
+        dialect=dialect or _active_sql_dialect(),
+    )
 
 
 @traceable_stage(
@@ -1601,9 +1759,10 @@ def check_result_stage(
 def check_groundedness_stage(
     answer: str,
     rows: list[dict],
+    question: str = "",
 ) -> GroundednessCheck:
     """Ejecuta la verificación de groundedness dentro del árbol de trazas."""
-    return check_groundedness(answer, rows)
+    return check_groundedness(answer, rows, question=question)
 
 
 # ---------------------------------------------------------------------------
@@ -1633,14 +1792,42 @@ def health() -> HealthResponse:
 
 @app.get("/ready")
 def ready() -> dict:
+    active_resource = (
+        query_runtime
+        if query_runtime is not None
+        else sql_database
+    )
+
+    if query_runtime is not None:
+        backend = query_runtime.name
+        message = (
+            "Backend configured "
+            f"(dialect: {query_runtime.dialect})."
+        )
+    elif sql_database is not None:
+        backend = "postgres"
+        message = (
+            f"Connected (dialect: {sql_database.dialect})."
+        )
+    else:
+        backend = SETTINGS.query_backend
+        message = (
+            "Query backend is not configured "
+            "or could not be initialized."
+        )
+
     return {
         "status": "ok",
-        "database": "connected" if sql_database is not None else "not_configured",
-        "message": (
-            f"Conectado (dialecto: {sql_database.dialect})."
-            if sql_database is not None
-            else "DATABASE_URL no configurada o la conexión a Supabase falló al arrancar."
+        "database": (
+            "connected"
+            if active_resource is not None
+            else "not_configured"
         ),
+        "backend": backend,
+        "optimizer_mode": SETTINGS.query_optimizer_mode,
+        "gemini_max_retries": SETTINGS.gemini_max_retries,
+        "gemini_timeout_seconds": SETTINGS.gemini_timeout_seconds,
+        "message": message,
         "langsmith": langsmith_connection_status(),
     }
 
@@ -1977,10 +2164,17 @@ async def query_answer(request: QueryRequest):
     existiendo como endpoints independientes pero ya no hace falta
     llamarlos aparte para esto).
     """
-    label, score = classify_shield(request.question)
+    timings_ms: dict[str, float] = {}
+    stage_call_counts: dict[str, int] = {}
+    label, score = timed_call(
+        timings_ms,
+        "input_shield",
+        classify_shield,
+        request.question,
+    )
     shield_info = ShieldInfo(label=label, score=score)
 
-    if label == "MALICIOUS":
+    if should_block_input(request.question, label, score):
         return AnswerResponse(
             answer=(
                 "Esta consulta fue bloqueada por el filtro de seguridad "
@@ -1991,6 +2185,8 @@ async def query_answer(request: QueryRequest):
             sources="",
             status="blocked",
             shield=shield_info,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     if text_collection is None or text_collection._collection.count() == 0:
@@ -2001,11 +2197,21 @@ async def query_answer(request: QueryRequest):
             sources="",
             status="prototype",
             shield=shield_info,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     try:
-        optimized_query = optimize_query_stage(
+        optimized_query = timed_call(
+            timings_ms,
+            "optimizer",
+            optimize_query_stage,
             request.question,
+            call_counts=(
+                stage_call_counts
+                if SETTINGS.query_optimizer_mode == "hybrid"
+                else None
+            ),
             llm=optimizer_llm,
         )
     except ValueError as exc:
@@ -2017,11 +2223,24 @@ async def query_answer(request: QueryRequest):
     # `optimized_query.original_question` directamente más abajo (ver nota
     # equivalente en query_json).
     query_for_retrieval = optimized_query.normalized_question
-    memory_examples = _search_query_memory_v2_examples(
-        optimized_query,
-        n_results=2,
-        distance_threshold=(QUERY_MEMORY_V2_DISTANCE_THRESHOLD),
-    )
+    try:
+        memory_examples = timed_call(
+            timings_ms,
+            "memory_retrieval",
+            _search_query_memory_v2_examples,
+            optimized_query,
+            n_results=2,
+            distance_threshold=QUERY_MEMORY_V2_DISTANCE_THRESHOLD,
+            wrap_exceptions=True,
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+        )
 
     # Reglas globales de negocio (data/business_rules.json): no dependen de
     # qué tabla se recuperó, así que se evalúan sobre la pregunta original,
@@ -2029,14 +2248,32 @@ async def query_answer(request: QueryRequest):
     # `suggested_tables`; acá solo se recupera el texto para el prompt.
     matched_business_rules = match_business_rules(optimized_query.original_question)
     business_rules_text = render_business_rules(matched_business_rules)
+    business_rule_excluded_tables = excluded_tables(
+        matched_business_rules,
+        optimized_query.original_question,
+    )
 
     retrieval_distance_threshold = 0.7
-    resp = retrieve_ddl_context(
-        text_collection,
-        query_for_retrieval,
-        suggested_tables=(optimized_query.suggested_tables),
-        distance_threshold=retrieval_distance_threshold,
-    )
+    try:
+        resp = timed_call(
+            timings_ms,
+            "ddl_retrieval",
+            retrieve_ddl_context,
+            text_collection,
+            query_for_retrieval,
+            suggested_tables=optimized_query.suggested_tables,
+            distance_threshold=retrieval_distance_threshold,
+            excluded_tables=business_rule_excluded_tables,
+            wrap_exceptions=True,
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+        )
 
     table_policies = build_semantic_policy_section(resp.tabla, resp.politicas)
 
@@ -2060,19 +2297,33 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
-    rag_response, verdict, attempts = generate_validated_sql(
-        optimized_query.original_question,
-        resp.ddl,
-        optimized_query,
-        allowed_tables=resp.tabla,
-        judge_llm=judge_llm,
-        db=sql_database,
-        memory_examples=memory_examples,
-        table_policies=table_policies,
-        business_rules_text=business_rules_text,
-    )
+    try:
+        rag_response, verdict, attempts = generate_validated_sql(
+            optimized_query.original_question,
+            resp.ddl,
+            optimized_query,
+            allowed_tables=resp.tabla,
+            judge_llm=judge_llm,
+            db=sql_database,
+            memory_examples=memory_examples,
+            table_policies=table_policies,
+            business_rules_text=business_rules_text,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+            retrieval=retrieval_info,
+        )
 
     if rag_response.sources == "":
         return AnswerResponse(
@@ -2085,6 +2336,8 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     approved = verdict is not None and verdict.is_valid and verdict.answers_question
@@ -2106,14 +2359,35 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
-    if sql_database is None:
+    active_query_resource = (
+        query_runtime
+        if query_runtime is not None
+        else sql_database
+    )
+
+    if active_query_resource is None:
         raise HTTPException(
-            503, "La ejecución de SQL no está configurada (DATABASE_URL faltante)."
+            503,
+            "SQL query backend is not configured.",
         )
 
-    execution = execute_sql(sql_database, rag_response.sql)
+    execution_kwargs = (
+        {"stage_timings_ms": timings_ms}
+        if isinstance(active_query_resource, QueryRuntime)
+        else {}
+    )
+    execution = timed_call(
+        timings_ms,
+        "sql_execution",
+        execute_sql,
+        active_query_resource,
+        rag_response.sql,
+        **execution_kwargs,
+    )
 
     if "error" in execution:
         return AnswerResponse(
@@ -2126,30 +2400,88 @@ async def query_answer(request: QueryRequest):
             shield=shield_info,
             optimized=optimized_response,
             retrieval=retrieval_info,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
         )
 
     rows = execution["rows"]
-    result_check = check_result_stage(rows, optimized_query)
-
-    answer_text = synthesize_answer(
-        answer_llm,
-        request.question,
-        rag_response.sql,
+    result_check = timed_call(
+        timings_ms,
+        "result_guardrail",
+        check_result_stage,
         rows,
+        optimized_query,
     )
-    groundedness = check_groundedness_stage(answer_text, rows)
 
-    if not groundedness.ok:
-        # Una sola regeneración con instrucción estricta, no un bucle nuevo:
-        # si el número inventado persiste, se entrega igual con warnings.
-        answer_text = synthesize_answer(
+    try:
+        answer_text = timed_call(
+            timings_ms,
+            "answer_synthesis",
+            synthesize_answer,
             answer_llm,
             request.question,
             rag_response.sql,
             rows,
-            strict_numbers=True,
+            call_counts=stage_call_counts,
+            wrap_exceptions=True,
         )
-        groundedness = check_groundedness_stage(answer_text, rows)
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+            retrieval=retrieval_info,
+            sql=rag_response.sql,
+            sources=rag_response.sources,
+            attempts=attempts,
+        )
+    groundedness = timed_call(
+        timings_ms,
+        "groundedness",
+        check_groundedness_stage,
+        answer_text,
+        rows,
+        request.question,
+    )
+
+    if not groundedness.ok:
+        # Una sola regeneración con instrucción estricta, no un bucle nuevo:
+        # si el número inventado persiste, se entrega igual con warnings.
+        try:
+            answer_text = timed_call(
+                timings_ms,
+                "answer_synthesis",
+                synthesize_answer,
+                answer_llm,
+                request.question,
+                rag_response.sql,
+                rows,
+                call_counts=stage_call_counts,
+                wrap_exceptions=True,
+                strict_numbers=True,
+            )
+        except StageExecutionError as exc:
+            return _pipeline_error_response(
+                exc,
+                timings_ms=timings_ms,
+                stage_call_counts=stage_call_counts,
+                shield=shield_info,
+                optimized=optimized_response,
+                retrieval=retrieval_info,
+                sql=rag_response.sql,
+                sources=rag_response.sources,
+                attempts=attempts,
+            )
+        groundedness = timed_call(
+            timings_ms,
+            "groundedness",
+            check_groundedness_stage,
+            answer_text,
+            rows,
+            request.question,
+        )
 
     warnings = list(result_check.warnings)
     if not groundedness.ok:
@@ -2199,6 +2531,8 @@ async def query_answer(request: QueryRequest):
         shield=shield_info,
         optimized=optimized_response,
         retrieval=retrieval_info,
+        timings_ms=timings_ms,
+        stage_call_counts=stage_call_counts,
     )
 
 

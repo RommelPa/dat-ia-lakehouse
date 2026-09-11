@@ -1,0 +1,50 @@
+{
+  "version": "1.0.0",
+  "backend": "databricks",
+  "scope": "gold_compatibility",
+  "description": "Overrides mínimos para los casos cuyo resultado depende de olist_order_reviews_dataset. El golden set PostgreSQL permanece intacto; estos valores representan el dataset realmente cargado en Databricks y diagnosticado como estable entre Bronze, Silver y Gold.",
+  "diagnostic_source": "databricks/gold/03_diagnose_review_parity.py",
+  "dataset_fingerprint": {
+    "olist_order_reviews_dataset": {
+      "rows": 99224,
+      "review_score_counts": {
+        "1": 11424,
+        "2": 3151,
+        "3": 8179,
+        "4": 19142,
+        "5": 57328
+      },
+      "bronze_silver_gold_row_count_equal": true
+    }
+  },
+  "overrides": {
+    "golden_017": {
+      "reason": "Data drift conocido en reseñas: Databricks contiene 99,224 filas y el baseline PostgreSQL histórico contiene 129,375. El SQL de referencia se ejecuta correctamente en ambos dialectos.",
+      "expected_result": {
+        "row_count": 5,
+        "rows": [
+          {"review_score": 1, "reviews": 11424},
+          {"review_score": 2, "reviews": 3151},
+          {"review_score": 3, "reviews": 8179},
+          {"review_score": 4, "reviews": 19142},
+          {"review_score": 5, "reviews": 57328}
+        ],
+        "numeric_tolerance": 0.01
+      }
+    },
+    "golden_022": {
+      "reason": "El ranking depende de la misma población de reseñas. Bronze, Silver y Gold conservan el mismo dataset de 99,224 filas, por lo que la diferencia frente al baseline PostgreSQL no fue introducida por el lakehouse.",
+      "expected_result": {
+        "row_count": 5,
+        "rows": [
+          {"category": "livros_interesse_geral", "avg_review_score": 4.46},
+          {"category": "livros_tecnicos", "avg_review_score": 4.41},
+          {"category": "alimentos_bebidas", "avg_review_score": 4.39},
+          {"category": "malas_acessorios", "avg_review_score": 4.33},
+          {"category": "alimentos", "avg_review_score": 4.28}
+        ],
+        "numeric_tolerance": 0.01
+      }
+    }
+  }
+}
