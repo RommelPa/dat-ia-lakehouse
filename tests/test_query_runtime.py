@@ -52,6 +52,7 @@ def test_query_runtime_executes_postgres_with_legacy_contract() -> None:
     assert result == {"rows": [{"value": 1}, {"value": 2}]}
     assert db.calls == [("SELECT value FROM demo", "cursor")]
     assert runtime.dialect == "postgresql"
+    assert runtime.sql_dialect == "postgres"
 
 
 def test_query_runtime_rejects_non_select_before_postgres_execution() -> None:
@@ -84,6 +85,7 @@ def test_query_runtime_delegates_to_databricks_executor(monkeypatch) -> None:
     assert result == {"rows": [{"backend": "databricks", "limit": 25}]}
     assert runtime.validation_db is None
     assert runtime.dialect == "databricks"
+    assert runtime.sql_dialect == "databricks"
 
 
 def test_create_query_runtime_builds_postgres_sql_database(monkeypatch) -> None:
