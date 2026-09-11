@@ -33,6 +33,32 @@ _FORBIDDEN_SQL_PATTERN = re.compile(
 )
 _NUMERIC_TEXT_PATTERN = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 _ANSWER_NUMBER_PATTERN = re.compile(r"(?<![\w])[-+]?\d[\d.,]*(?![\w])")
+_ANSWER_PERCENT_PATTERN = re.compile(
+    r"(?<![\w])(?P<number>[-+]?\d[\d.,]*)\s*%(?![\w])"
+)
+_PERCENTAGE_FIELD_HINTS = {
+    "pct",
+    "percent",
+    "percentage",
+    "porcentaje",
+    "rate",
+    "ratio",
+    "tasa",
+}
+_MONTH_NAMES_ES = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
 _UUID_PATTERN = re.compile(
     r"\b(?:[0-9a-fA-F]{32}|"
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -248,14 +274,15 @@ def answer_contains_expected_facts(
         return False
 
     return all(
-        _answer_contains_value(
+        _answer_contains_expected_fact(
             answer,
+            expected_key,
             expected_value,
             tolerance=float(tolerance),
         )
         for row in expected_rows
         if isinstance(row, Mapping)
-        for expected_value in row.values()
+        for expected_key, expected_value in row.items()
     )
 
 
@@ -519,6 +546,49 @@ def _values_equivalent(
         return _normalize_text(actual) == _normalize_text(expected)
 
     return actual == expected
+
+
+def _looks_like_percentage_field(field_name: str) -> bool:
+    tokens = re.findall(
+        r"[a-zA-ZáéíóúñÁÉÍÓÚÑ]+",
+        str(field_name).casefold(),
+    )
+    return bool(set(tokens) & _PERCENTAGE_FIELD_HINTS)
+
+
+def _answer_contains_expected_fact(
+    answer: str,
+    field_name: str,
+    expected: Any,
+    *,
+    tolerance: float,
+) -> bool:
+    """Compara hechos redactados conservando equivalencias semánticas comunes."""
+    if isinstance(expected, str) and _MONTH_PATTERN.fullmatch(expected):
+        year_text, month_text = expected.split("-", 1)
+        month_name = _MONTH_NAMES_ES.get(int(month_text))
+        if month_name is not None:
+            normalized_answer = _normalize_text(answer)
+            if f"{month_name} {year_text}" in normalized_answer:
+                return True
+
+    expected_number = _as_decimal(expected)
+    if (
+        expected_number is not None
+        and abs(expected_number) <= Decimal("1")
+        and _looks_like_percentage_field(field_name)
+    ):
+        for match in _ANSWER_PERCENT_PATTERN.finditer(answer):
+            for candidate in _numeric_token_candidates(match.group("number")):
+                ratio_candidate = candidate / Decimal("100")
+                if abs(ratio_candidate - expected_number) <= Decimal(str(tolerance)):
+                    return True
+
+    return _answer_contains_value(
+        answer,
+        expected,
+        tolerance=tolerance,
+    )
 
 
 def _answer_contains_value(
