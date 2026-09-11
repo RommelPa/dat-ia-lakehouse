@@ -1637,10 +1637,11 @@ def optimize_query_stage(
     *,
     llm=None,
 ) -> OptimizedQuery:
-    """Ejecuta el optimizador híbrido dentro del árbol de trazas."""
+    """Ejecuta el modo de optimizer configurado dentro del árbol de trazas."""
     return optimize_query(
         question,
         llm=llm,
+        use_llm=SETTINGS.query_optimizer_mode == "hybrid",
     )
 
 
@@ -1782,6 +1783,7 @@ def ready() -> dict:
             else "not_configured"
         ),
         "backend": backend,
+        "optimizer_mode": SETTINGS.query_optimizer_mode,
         "message": message,
         "langsmith": langsmith_connection_status(),
     }
@@ -2162,7 +2164,11 @@ async def query_answer(request: QueryRequest):
             "optimizer",
             optimize_query_stage,
             request.question,
-            call_counts=stage_call_counts,
+            call_counts=(
+                stage_call_counts
+                if SETTINGS.query_optimizer_mode == "hybrid"
+                else None
+            ),
             llm=optimizer_llm,
         )
     except ValueError as exc:
