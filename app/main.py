@@ -32,6 +32,7 @@ from app.observability import (
     build_trace_metadata,
     build_trace_tags,
     langsmith_connection_status,
+    StageExecutionError,
     timed_call,
     traceable_stage,
 )
@@ -493,6 +494,38 @@ class AnswerResponse(BaseModel):
     retrieval: RetrievalInfo | None = None
     timings_ms: dict[str, float] = Field(default_factory=dict)
     stage_call_counts: dict[str, int] = Field(default_factory=dict)
+    error_stage: str | None = None
+    error_type: str | None = None
+
+
+def _pipeline_error_response(
+    exc: StageExecutionError,
+    *,
+    timings_ms: dict[str, float],
+    stage_call_counts: dict[str, int],
+    shield: ShieldInfo | None = None,
+    optimized: QueryOptimizeResponse | None = None,
+    retrieval: RetrievalInfo | None = None,
+    sql: str = "",
+    sources: str = "",
+    attempts: int = 0,
+) -> AnswerResponse:
+    """Devuelve diagnóstico seguro y estructurado para fallos de etapa."""
+    return AnswerResponse(
+        answer="El proveedor externo no pudo completar una etapa del pipeline.",
+        sql=sql,
+        data=[],
+        sources=sources,
+        status="provider_error",
+        attempts=attempts,
+        shield=shield,
+        optimized=optimized,
+        retrieval=retrieval,
+        timings_ms=timings_ms,
+        stage_call_counts=stage_call_counts,
+        error_stage=exc.stage,
+        error_type=exc.error_type,
+    )
 
 
 class _AnswerPayload(BaseModel):
@@ -1416,6 +1449,7 @@ def generate_validated_sql(
             feedback=feedback,
             table_policies=table_policies,
             business_rules_text=business_rules_text,
+            wrap_exceptions=True,
         )
 
         if rag_response.sources == "":
@@ -1464,6 +1498,7 @@ def generate_validated_sql(
             call_counts=stage_call_counts,
             source_schema=rag_response.source_schema,
             dialect=_active_sql_dialect(),
+            wrap_exceptions=True,
         )
         if verdict.is_valid and verdict.answers_question:
             return rag_response, verdict, attempt
@@ -2187,14 +2222,24 @@ async def query_answer(request: QueryRequest):
     # `optimized_query.original_question` directamente más abajo (ver nota
     # equivalente en query_json).
     query_for_retrieval = optimized_query.normalized_question
-    memory_examples = timed_call(
-        timings_ms,
-        "memory_retrieval",
-        _search_query_memory_v2_examples,
-        optimized_query,
+    try:
+        memory_examples = timed_call(
+            timings_ms,
+            "memory_retrieval",
+            _search_query_memory_v2_examples,
+            optimized_query,
+            wrap_exceptions=True,
         n_results=2,
-        distance_threshold=(QUERY_MEMORY_V2_DISTANCE_THRESHOLD),
-    )
+            distance_threshold=(QUERY_MEMORY_V2_DISTANCE_THRESHOLD),
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+        )
 
     # Reglas globales de negocio (data/business_rules.json): no dependen de
     # qué tabla se recuperó, así que se evalúan sobre la pregunta original,
@@ -2208,16 +2253,26 @@ async def query_answer(request: QueryRequest):
     )
 
     retrieval_distance_threshold = 0.7
-    resp = timed_call(
-        timings_ms,
-        "ddl_retrieval",
-        retrieve_ddl_context,
-        text_collection,
-        query_for_retrieval,
+    try:
+        resp = timed_call(
+            timings_ms,
+            "ddl_retrieval",
+            retrieve_ddl_context,
+            text_collection,
+            query_for_retrieval,
+            wrap_exceptions=True,
         suggested_tables=(optimized_query.suggested_tables),
         distance_threshold=retrieval_distance_threshold,
-        excluded_tables=business_rule_excluded_tables,
-    )
+            excluded_tables=business_rule_excluded_tables,
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+        )
 
     table_policies = build_semantic_policy_section(resp.tabla, resp.politicas)
 
@@ -2245,19 +2300,29 @@ async def query_answer(request: QueryRequest):
             stage_call_counts=stage_call_counts,
         )
 
-    rag_response, verdict, attempts = generate_validated_sql(
-        optimized_query.original_question,
-        resp.ddl,
-        optimized_query,
-        allowed_tables=resp.tabla,
-        judge_llm=judge_llm,
-        db=sql_database,
-        memory_examples=memory_examples,
-        table_policies=table_policies,
-        business_rules_text=business_rules_text,
-        timings_ms=timings_ms,
-        stage_call_counts=stage_call_counts,
-    )
+    try:
+        rag_response, verdict, attempts = generate_validated_sql(
+            optimized_query.original_question,
+            resp.ddl,
+            optimized_query,
+            allowed_tables=resp.tabla,
+            judge_llm=judge_llm,
+            db=sql_database,
+            memory_examples=memory_examples,
+            table_policies=table_policies,
+            business_rules_text=business_rules_text,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+            retrieval=retrieval_info,
+        )
 
     if rag_response.sources == "":
         return AnswerResponse(
@@ -2347,16 +2412,30 @@ async def query_answer(request: QueryRequest):
         optimized_query,
     )
 
-    answer_text = timed_call(
-        timings_ms,
-        "answer_synthesis",
-        synthesize_answer,
-        answer_llm,
-        request.question,
-        rag_response.sql,
-        rows,
-        call_counts=stage_call_counts,
-    )
+    try:
+        answer_text = timed_call(
+            timings_ms,
+            "answer_synthesis",
+            synthesize_answer,
+            answer_llm,
+            request.question,
+            rag_response.sql,
+            rows,
+            call_counts=stage_call_counts,
+            wrap_exceptions=True,
+        )
+    except StageExecutionError as exc:
+        return _pipeline_error_response(
+            exc,
+            timings_ms=timings_ms,
+            stage_call_counts=stage_call_counts,
+            shield=shield_info,
+            optimized=optimized_response,
+            retrieval=retrieval_info,
+            sql=rag_response.sql,
+            sources=rag_response.sources,
+            attempts=attempts,
+        )
     groundedness = timed_call(
         timings_ms,
         "groundedness",
@@ -2368,17 +2447,31 @@ async def query_answer(request: QueryRequest):
     if not groundedness.ok:
         # Una sola regeneración con instrucción estricta, no un bucle nuevo:
         # si el número inventado persiste, se entrega igual con warnings.
-        answer_text = timed_call(
-            timings_ms,
-            "answer_synthesis",
-            synthesize_answer,
-            answer_llm,
-            request.question,
-            rag_response.sql,
-            rows,
-            call_counts=stage_call_counts,
-            strict_numbers=True,
-        )
+        try:
+            answer_text = timed_call(
+                timings_ms,
+                "answer_synthesis",
+                synthesize_answer,
+                answer_llm,
+                request.question,
+                rag_response.sql,
+                rows,
+                call_counts=stage_call_counts,
+                wrap_exceptions=True,
+                strict_numbers=True,
+            )
+        except StageExecutionError as exc:
+            return _pipeline_error_response(
+                exc,
+                timings_ms=timings_ms,
+                stage_call_counts=stage_call_counts,
+                shield=shield_info,
+                optimized=optimized_response,
+                retrieval=retrieval_info,
+                sql=rag_response.sql,
+                sources=rag_response.sources,
+                attempts=attempts,
+            )
         groundedness = timed_call(
             timings_ms,
             "groundedness",
