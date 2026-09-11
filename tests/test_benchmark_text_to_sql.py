@@ -270,3 +270,27 @@ def test_average_stage_call_counts_uses_api_counters() -> None:
         "optimizer": 1.0,
         "sql_judgement": 1.5,
     }
+
+
+def test_average_component_latencies_excludes_rule_based_optimizer() -> None:
+    cases = [
+        {
+            "output": {
+                "timings_ms": {
+                    "optimizer": 25.0,
+                    "sql_generation": 100.0,
+                    "sql_judgement": 50.0,
+                    "answer_synthesis": 30.0,
+                },
+                "stage_call_counts": {
+                    "sql_generation": 1,
+                    "sql_judgement": 1,
+                    "answer_synthesis": 1,
+                },
+            }
+        }
+    ]
+
+    result = _average_component_latencies(cases)
+
+    assert result["llm"] == 180.0
