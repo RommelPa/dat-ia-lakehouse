@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     )
 
     @property
+    def sql_dialect(self) -> Literal["postgres", "databricks"]:
+        """Dialecto SQL canónico que debe usar todo el pipeline."""
+        return self.query_backend
+
+    @property
     def cloudflare_base_url(self) -> str:
         """Endpoint OpenAI-compatible de Cloudflare Workers AI."""
         return (
