@@ -40,6 +40,11 @@ dependencies = [
     "databricks-sql-connector>=4.5.0",
 ]
 
+[project.optional-dependencies]
+observability = [
+    "mlflow>=3.16.0",
+]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
