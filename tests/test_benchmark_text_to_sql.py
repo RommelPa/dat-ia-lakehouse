@@ -6,6 +6,7 @@ from scripts.benchmark_query_backends import (
 )
 from scripts import benchmark_text_to_sql as benchmark_module
 from scripts.benchmark_text_to_sql import (
+    _average_stage_latencies,
     _track_with_mlflow,
     effective_reference_outputs,
     evaluate_case_output,
@@ -177,4 +178,35 @@ def test_track_with_mlflow_forwards_tracking_configuration(
         "tracking_uri": "file:./mlruns-test",
         "experiment_name": "experiment-test",
         "run_name": "run-test",
+    }
+
+
+def test_average_stage_latencies_uses_api_timings() -> None:
+    cases = [
+        {
+            "output": {
+                "timings_ms": {
+                    "optimizer": 100.0,
+                    "sql_generation": 200.0,
+                }
+            }
+        },
+        {
+            "output": {
+                "timings_ms": {
+                    "optimizer": 300.0,
+                    "sql_generation": 400.0,
+                    "sql_execution": 50.0,
+                }
+            }
+        },
+        {"output": {"status": "runner_error"}},
+    ]
+
+    result = _average_stage_latencies(cases)
+
+    assert result == {
+        "optimizer": 200.0,
+        "sql_execution": 50.0,
+        "sql_generation": 300.0,
     }
