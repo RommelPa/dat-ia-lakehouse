@@ -329,7 +329,9 @@ async def lifespan(app: FastAPI):
 
     yield  # La app corre entre yield y el bloque de cleanup
 
-    # Cleanup (opcional aquí, ChromaDB persiste solo)
+    if query_runtime is not None:
+        query_runtime.close()
+
     print("[shutdown] Cerrando app.")
 
 
