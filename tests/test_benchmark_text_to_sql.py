@@ -6,6 +6,7 @@ from scripts.benchmark_query_backends import (
 )
 from scripts import benchmark_text_to_sql as benchmark_module
 from scripts.benchmark_text_to_sql import (
+    _average_component_latencies,
     _average_stage_latencies,
     _track_with_mlflow,
     effective_reference_outputs,
@@ -209,4 +210,47 @@ def test_average_stage_latencies_uses_api_timings() -> None:
         "optimizer": 200.0,
         "sql_execution": 50.0,
         "sql_generation": 300.0,
+    }
+
+
+def test_average_component_latencies_groups_pipeline_stages() -> None:
+    cases = [
+        {
+            "output": {
+                "timings_ms": {
+                    "optimizer": 100.0,
+                    "sql_generation": 200.0,
+                    "sql_judgement": 50.0,
+                    "answer_synthesis": 25.0,
+                    "sql_execution": 80.0,
+                    "memory_retrieval": 10.0,
+                    "ddl_retrieval": 20.0,
+                    "input_shield": 5.0,
+                    "sql_validation": 2.0,
+                    "result_guardrail": 1.0,
+                    "groundedness": 1.0,
+                }
+            }
+        },
+        {
+            "output": {
+                "timings_ms": {
+                    "optimizer": 300.0,
+                    "sql_generation": 100.0,
+                    "sql_execution": 120.0,
+                    "ddl_retrieval": 40.0,
+                    "input_shield": 7.0,
+                }
+            }
+        },
+        {"output": {"status": "runner_error"}},
+    ]
+
+    result = _average_component_latencies(cases)
+
+    assert result == {
+        "database": 100.0,
+        "guardrails": 8.0,
+        "llm": 387.5,
+        "retrieval": 35.0,
     }
