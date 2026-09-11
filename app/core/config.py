@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     google_api_key: str | None = None
     database_url: str | None = None
     query_backend: Literal["postgres", "databricks"] = "postgres"
+    query_optimizer_mode: Literal["hybrid", "rule_based"] = "hybrid"
 
     databricks_server_hostname: str | None = None
     databricks_http_path: str | None = None
