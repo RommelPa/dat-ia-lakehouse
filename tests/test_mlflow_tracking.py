@@ -61,6 +61,7 @@ def _report() -> dict:
         "ready": {
             "backend": "databricks",
             "database": "connected",
+            "optimizer_mode": "rule_based",
         },
         "summary": {
             "metrics": {
@@ -113,6 +114,7 @@ def test_report_params_keep_low_cardinality_metadata() -> None:
     assert params["backend"] == "databricks"
     assert params["dataset_version"] == "2.1.0"
     assert params["ready_backend"] == "databricks"
+    assert params["ready_optimizer_mode"] == "rule_based"
     assert params["override_count"] == 2
     assert params["override_case_ids"] == "golden_017,golden_022"
     assert params["runner_error_case_ids"] == "golden_011"
