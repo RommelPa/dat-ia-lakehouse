@@ -67,11 +67,10 @@ def _parse_answer_number(raw: str) -> float:
         else:
             normalized = normalized.replace(",", "")
     elif "," in normalized:
-        decimal_part = normalized.rsplit(",", 1)[1]
-        if normalized.startswith("0,") or len(decimal_part) <= 2:
-            normalized = normalized.replace(",", ".")
-        else:
-            normalized = normalized.replace(",", "")
+        # La coma se interpreta primero como separador decimal. Cuando hay
+        # exactamente tres dígitos finales, _parse_answer_number_candidates
+        # añade además la interpretación alternativa de miles.
+        normalized = normalized.replace(",", ".")
 
     return float(normalized)
 
@@ -146,8 +145,11 @@ def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
             if numeric_value is not None:
                 raw_values.add(numeric_value)
 
-                if _looks_like_percentage_key(str(key)) and abs(numeric_value) <= 1:
-                    percentage_values.add(numeric_value * 100)
+                if _looks_like_percentage_key(str(key)):
+                    if abs(numeric_value) <= 1:
+                        percentage_values.add(numeric_value * 100)
+                    else:
+                        percentage_values.add(numeric_value)
                 continue
 
             if isinstance(value, str):
@@ -156,6 +158,38 @@ def _numeric_values(rows: list[dict]) -> tuple[set[float], set[float]]:
                     raw_values.add(float(date_match.group("year")))
 
     return raw_values, percentage_values
+
+
+_NUMBER_PATTERN = re.compile(
+    r"(?<![\\w])(?P<number>\\d+(?:[.,]\\d+)?)(?P<percent>\\s*%)?(?![\\w])"
+)
+
+
+def _numeric_values_from_text(text: str) -> tuple[set[float], set[float]]:
+    """Extrae números explícitos del texto sin fragmentar identificadores."""
+    raw_values: set[float] = set()
+    percentage_values: set[float] = set()
+
+    for match in _NUMBER_PATTERN.finditer(text):
+        candidates = _parse_answer_number_candidates(match.group("number"))
+        target = percentage_values if match.group("percent") else raw_values
+        target.update(candidates)
+
+    return raw_values, percentage_values
+
+
+def _question_requests_percentage(question: str) -> bool:
+    """Detecta si la pregunta pide explícitamente una tasa o porcentaje."""
+    if "%" in question:
+        return True
+
+    tokens = set(
+        re.findall(
+            r"[a-zA-ZáéíóúñÁÉÍÓÚÑ]+",
+            question.casefold(),
+        )
+    )
+    return bool(tokens & _PERCENTAGE_HINTS)
 
 
 def _find_metric_column(metric: str, row: dict) -> str | None:
@@ -230,6 +264,8 @@ def check_groundedness(
     answer: str,
     rows: list[dict],
     tolerance: float = 0.01,
+    *,
+    question: str = "",
 ) -> GroundednessCheck:
     """Verifica que cada número del texto exista entre los valores de las filas.
 
@@ -244,28 +280,40 @@ def check_groundedness(
     decimal. Esto evita falsos negativos en redondeos sin aceptar conteos
     cercanos pero incorrectos.
 
-    Tiene falsos positivos esperables (números de fila, conteos, porcentajes
-    derivados de dos columnas): por diseño es una señal de sospecha para
-    disparar una única regeneración de la redacción, no un bloqueo automático.
+    También acepta números explícitos de la pregunta cuando la respuesta solo
+    repite una restricción del usuario (por ejemplo, "top 5" o "al menos 100").
+    Los dígitos incrustados en identificadores alfanuméricos no se consideran
+    números independientes.
 
     Args:
         answer: texto redactado por `synthesize_answer`.
         rows: filas reales que `answer` debería estar describiendo.
         tolerance: fracción de tolerancia relativa al comparar (0.01 = 1%).
+        question: pregunta original; sus números explícitos pueden respaldar
+            restricciones repetidas por la respuesta.
 
     Returns:
         `GroundednessCheck` con los números del texto que no encontraron
         respaldo en `rows`.
     """
-    number_pattern = re.compile(r"(?P<number>\d+(?:[.,]\d+)?)(?P<percent>\s*%)?")
-    numbers_in_answer = list(number_pattern.finditer(answer))
+    numbers_in_answer = list(_NUMBER_PATTERN.finditer(answer))
     row_values, percentage_values = _numeric_values(rows)
+    question_values, question_percentage_values = _numeric_values_from_text(question)
+
+    # Algunas consultas devuelven un porcentaje ya escalado (8.11) bajo un
+    # alias no porcentual. Si la pregunta pide explícitamente un porcentaje,
+    # ese valor crudo también puede respaldar una redacción con "%".
+    if _question_requests_percentage(question):
+        percentage_values.update(row_values)
 
     unsupported = []
     for match in numbers_in_answer:
         raw = match.group("number")
         candidates = _parse_answer_number_candidates(raw)
-        candidate_values = percentage_values if match.group("percent") else row_values
+        if match.group("percent"):
+            candidate_values = percentage_values | question_percentage_values
+        else:
+            candidate_values = row_values | question_values
 
         if not any(
             _numbers_match(candidate, value, tolerance)
