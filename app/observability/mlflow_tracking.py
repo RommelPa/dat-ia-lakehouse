@@ -76,6 +76,12 @@ def _summary_metrics(report: Mapping[str, Any]) -> dict[str, float]:
             if isinstance(value, (int, float)):
                 metrics[f"component_latency.{component}.avg_ms"] = float(value)
 
+    stage_call_counts = summary.get("avg_stage_call_counts")
+    if isinstance(stage_call_counts, Mapping):
+        for stage, value in stage_call_counts.items():
+            if isinstance(value, (int, float)):
+                metrics[f"stage_calls.{stage}.avg"] = float(value)
+
     return metrics
 
 
