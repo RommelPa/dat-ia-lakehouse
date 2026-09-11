@@ -1,7 +1,8 @@
 """Validación determinística del SQL generado, previa a su ejecución.
 
 Compone capas en orden barato → caro: forma de la sentencia (solo SELECT,
-sin apilar), parsear a un AST, comparar las tablas citadas contra el esquema
+sin apilar), incompatibilidades conocidas del dialecto objetivo, parsear a un
+AST, comparar las tablas citadas contra el esquema
 recuperado, y un dry-run con `EXPLAIN` contra la base de datos real (sin leer
 filas) para validar columnas y tipos. No sustituye al juez LLM: solo captura
 los niveles de error más baratos de detectar.
@@ -21,15 +22,73 @@ llamada cara.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 import sqlglot
 from langchain_community.utilities import SQLDatabase
 from sqlglot import exp
 
-SqlValidationStage = Literal["syntax", "statement", "tables", "dry_run", "ok"]
+SqlDialect = Literal["postgres", "databricks"]
+SqlValidationStage = Literal[
+    "syntax",
+    "statement",
+    "dialect",
+    "tables",
+    "dry_run",
+    "ok",
+]
 
 DEFAULT_ROW_LIMIT = 200
+
+_SQL_LITERAL_OR_COMMENT_PATTERN = re.compile(
+    r"'(?:''|[^'])*'|--[^\r\n]*|/\*.*?\*/",
+    flags=re.DOTALL,
+)
+
+_DIALECT_INCOMPATIBILITIES: dict[
+    SqlDialect,
+    tuple[tuple[re.Pattern[str], str], ...],
+] = {
+    "databricks": (
+        (
+            re.compile(r"\bDISTINCT\s+ON\s*\(", flags=re.IGNORECASE),
+            "DISTINCT ON es específico de PostgreSQL.",
+        ),
+        (
+            re.compile(r"\bGENERATE_SERIES\s*\(", flags=re.IGNORECASE),
+            "generate_series no pertenece al dialecto Databricks SQL.",
+        ),
+        (
+            re.compile(r"\bJSONB_[A-Z0-9_]+\s*\(", flags=re.IGNORECASE),
+            "Las funciones jsonb_* son específicas de PostgreSQL.",
+        ),
+    ),
+    "postgres": (
+        (
+            re.compile(r"\bQUALIFY\b", flags=re.IGNORECASE),
+            "QUALIFY no pertenece al dialecto PostgreSQL.",
+        ),
+        (
+            re.compile(
+                r"\bTRY_(?:ADD|SUBTRACT|MULTIPLY|DIVIDE|MOD|SUM|AVG)\s*\(",
+                flags=re.IGNORECASE,
+            ),
+            "Las funciones try_* indicadas pertenecen a Databricks SQL.",
+        ),
+        (
+            re.compile(r"\bCOLLECT_(?:LIST|SET)\s*\(", flags=re.IGNORECASE),
+            "collect_list/collect_set pertenecen a Databricks SQL.",
+        ),
+        (
+            re.compile(
+                r"\b(?:ARRAY_JOIN|DATE_FORMAT|FROM_JSON|NAMED_STRUCT)\s*\(",
+                flags=re.IGNORECASE,
+            ),
+            "La función indicada pertenece a Databricks SQL.",
+        ),
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -45,6 +104,30 @@ class SqlValidation:
     stage: SqlValidationStage
     error: str
     sql: str = ""
+
+
+def dialect_compatibility_error(
+    sql: str,
+    dialect: SqlDialect,
+) -> str | None:
+    """Detecta incompatibilidades conocidas sin reescribir ni transpilar SQL.
+
+    La lista es deliberadamente conservadora: solo contiene construcciones
+    de alta confianza que pertenecen a un backend concreto. SQLGlot puede
+    aceptar sintaxis cruzada de forma tolerante, por lo que este guardrail
+    explícito evita que un SQL generado para otro motor avance hasta
+    ejecución.
+
+    Literales de texto y comentarios se eliminan antes de aplicar patrones
+    para no bloquear consultas que solo mencionan una función o keyword.
+    """
+    code_only = _SQL_LITERAL_OR_COMMENT_PATTERN.sub(" ", sql)
+
+    for pattern, message in _DIALECT_INCOMPATIBILITIES[dialect]:
+        if pattern.search(code_only):
+            return message
+
+    return None
 
 
 def dry_run_explain(db: SQLDatabase, sql: str) -> str | None:
@@ -68,7 +151,7 @@ def validate_sql(
     sql: str,
     allowed_tables: list[str],
     db: SQLDatabase | None = None,
-    dialect: Literal["postgres", "databricks"] = "postgres",
+    dialect: SqlDialect = "postgres",
 ) -> SqlValidation:
     """Valida forma, sintaxis y tablas citadas, y hace dry-run.
 
@@ -95,6 +178,14 @@ def validate_sql(
             is_valid=False,
             stage="statement",
             error="Solo se permite una sentencia SQL por consulta.",
+        )
+
+    dialect_error = dialect_compatibility_error(stripped, dialect)
+    if dialect_error is not None:
+        return SqlValidation(
+            is_valid=False,
+            stage="dialect",
+            error=dialect_error,
         )
 
     try:
