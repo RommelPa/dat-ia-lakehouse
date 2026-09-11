@@ -68,6 +68,7 @@ def validate_sql(
     sql: str,
     allowed_tables: list[str],
     db: SQLDatabase | None = None,
+    dialect: Literal["postgres", "databricks"] = "postgres",
 ) -> SqlValidation:
     """Valida forma, sintaxis y tablas citadas, y hace dry-run.
 
@@ -78,6 +79,7 @@ def validate_sql(
         db: conexión para el dry-run con `EXPLAIN`. Si es `None` (por
             ejemplo, `DATABASE_URL` no configurada), esa etapa se omite sin
             marcarse como error.
+        dialect: dialecto explícito usado por SQLGlot al parsear el SQL.
 
     Returns:
         `SqlValidation` con `is_valid=True`, `stage="ok"` y el SQL original
@@ -96,7 +98,7 @@ def validate_sql(
         )
 
     try:
-        tree = sqlglot.parse_one(stripped, read="postgres")
+        tree = sqlglot.parse_one(stripped, read=dialect)
     except sqlglot.errors.ParseError as exc:
         return SqlValidation(is_valid=False, stage="syntax", error=str(exc))
 
