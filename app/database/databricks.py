@@ -8,6 +8,7 @@ que el backend Databricks sea activado explícitamente.
 
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any
 
 import sqlglot
@@ -86,6 +87,50 @@ class DatabricksExecutor:
     ) -> None:
         self.config = config
         self._connect = connect or _default_connect
+        self._connection: Any | None = None
+        self._connection_lock = Lock()
+
+    def _get_connection(
+        self,
+        timings_ms: MutableMapping[str, float] | None,
+    ) -> Any:
+        """Abre la conexión una sola vez y la reutiliza mientras siga válida."""
+        if self._connection is None:
+            self._connection = timed_call(
+                timings_ms,
+                "databricks_connect",
+                self._connect,
+                server_hostname=self.config.server_hostname,
+                http_path=self.config.http_path,
+                auth_type=self.config.auth_type,
+                catalog=self.config.catalog,
+                schema=self.config.schema,
+            )
+        return self._connection
+
+    def _close_connection_unlocked(
+        self,
+        timings_ms: MutableMapping[str, float] | None = None,
+    ) -> None:
+        connection = self._connection
+        self._connection = None
+
+        if connection is None:
+            return
+
+        try:
+            timed_call(
+                timings_ms,
+                "databricks_connection_close",
+                connection.close,
+            )
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Cierra explícitamente la sesión compartida del executor."""
+        with self._connection_lock:
+            self._close_connection_unlocked()
 
     def execute(
         self,
@@ -113,68 +158,55 @@ class DatabricksExecutor:
         if row_limit < 1:
             return {"error": "row_limit debe ser mayor que cero."}
 
-        connection = None
         cursor = None
+        invalidate_connection = False
 
-        try:
-            connection = timed_call(
-                timings_ms,
-                "databricks_connect",
-                self._connect,
-                server_hostname=self.config.server_hostname,
-                http_path=self.config.http_path,
-                auth_type=self.config.auth_type,
-                catalog=self.config.catalog,
-                schema=self.config.schema,
-            )
-            cursor = timed_call(
-                timings_ms,
-                "databricks_cursor",
-                connection.cursor,
-            )
-            timed_call(
-                timings_ms,
-                "databricks_execute",
-                cursor.execute,
-                stripped,
-            )
+        with self._connection_lock:
+            try:
+                connection = self._get_connection(timings_ms)
+                cursor = timed_call(
+                    timings_ms,
+                    "databricks_cursor",
+                    connection.cursor,
+                )
+                timed_call(
+                    timings_ms,
+                    "databricks_execute",
+                    cursor.execute,
+                    stripped,
+                )
 
-            description = cursor.description or []
-            columns = [str(column[0]) for column in description]
-            raw_rows = timed_call(
-                timings_ms,
-                "databricks_fetch",
-                cursor.fetchmany,
-                size=row_limit,
-            )
+                description = cursor.description or []
+                columns = [str(column[0]) for column in description]
+                raw_rows = timed_call(
+                    timings_ms,
+                    "databricks_fetch",
+                    cursor.fetchmany,
+                    size=row_limit,
+                )
 
-            rows = [
-                {
-                    column_name: value
-                    for column_name, value in zip(columns, row, strict=False)
-                }
-                for row in raw_rows
-            ]
+                rows = [
+                    {
+                        column_name: value
+                        for column_name, value in zip(columns, row, strict=False)
+                    }
+                    for row in raw_rows
+                ]
 
-            return {"rows": rows}
-        except Exception as exc:
-            return {"error": str(exc)}
-        finally:
-            if cursor is not None:
-                try:
-                    timed_call(
-                        timings_ms,
-                        "databricks_close",
-                        cursor.close,
-                    )
-                except Exception:
-                    pass
-            if connection is not None:
-                try:
-                    timed_call(
-                        timings_ms,
-                        "databricks_close",
-                        connection.close,
-                    )
-                except Exception:
-                    pass
+                return {"rows": rows}
+            except Exception as exc:
+                invalidate_connection = True
+                return {"error": str(exc)}
+            finally:
+                if cursor is not None:
+                    try:
+                        timed_call(
+                            timings_ms,
+                            "databricks_cursor_close",
+                            cursor.close,
+                        )
+                    except Exception:
+                        pass
+
+                if invalidate_connection:
+                    self._close_connection_unlocked(timings_ms)
