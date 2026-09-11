@@ -356,12 +356,29 @@ def _average_component_latencies(
         if not isinstance(timings, Mapping):
             continue
 
+        call_counts = output.get("stage_call_counts")
+
         for component, stages in COMPONENT_STAGE_GROUPS.items():
-            values = [
-                float(timings[stage])
-                for stage in stages
-                if isinstance(timings.get(stage), (int, float))
-            ]
+            values = []
+            for stage in stages:
+                value = timings.get(stage)
+                if not isinstance(value, (int, float)):
+                    continue
+
+                # En modo rule_based el tiempo de "optimizer" es CPU local,
+                # no una llamada LLM. La ausencia deliberada del contador
+                # visible distingue ese caso sin romper reportes históricos
+                # que todavía no tenían stage_call_counts.
+                if (
+                    component == "llm"
+                    and stage == "optimizer"
+                    and isinstance(call_counts, Mapping)
+                    and not bool(call_counts.get("optimizer"))
+                ):
+                    continue
+
+                values.append(float(value))
+
             if values:
                 samples.setdefault(component, []).append(sum(values))
 
