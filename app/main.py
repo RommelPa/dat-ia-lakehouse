@@ -1424,7 +1424,13 @@ def generate_validated_sql(
         # string exacto que se validó.
         rag_response = rag_response.model_copy(update={"sql": validation.sql})
 
-        verdict = judge_sql_stage(optimized_query, rag_response.sql, judge_llm, source_schema=rag_response.source_schema,)
+        verdict = judge_sql_stage(
+            optimized_query,
+            rag_response.sql,
+            judge_llm,
+            source_schema=rag_response.source_schema,
+            dialect=_active_sql_dialect(),
+        )
         if verdict.is_valid and verdict.answers_question:
             return rag_response, verdict, attempt
 
@@ -1649,9 +1655,16 @@ def judge_sql_stage(
     sql: str,
     llm: Any,
     source_schema: str = "",
+    dialect: str | None = None,
 ) -> SqlVerdict:
     """Ejecuta el juez LLM dentro del árbol de trazas."""
-    return judge_sql(optimized_query, sql, llm, source_schema=source_schema)
+    return judge_sql(
+        optimized_query,
+        sql,
+        llm,
+        source_schema=source_schema,
+        dialect=dialect or _active_sql_dialect(),
+    )
 
 
 @traceable_stage(
