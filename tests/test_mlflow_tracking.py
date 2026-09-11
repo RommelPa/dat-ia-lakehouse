@@ -57,6 +57,7 @@ def _report() -> dict:
         "dataset_content_sha256": "abc123",
         "selected_cases": 30,
         "skipped_cases": 0,
+        "override_case_ids": ["golden_017", "golden_022"],
         "ready": {
             "backend": "databricks",
             "database": "connected",
@@ -69,7 +70,8 @@ def _report() -> dict:
                     "rate": 1.0,
                 }
             },
-            "runner_errors": 0,
+            "runner_errors": 1,
+            "runner_error_case_ids": ["golden_011"],
             "cases_with_warnings": 2,
             "avg_attempts": 1.1,
             "avg_latency_ms": 1234.5,
@@ -93,6 +95,9 @@ def test_report_params_keep_low_cardinality_metadata() -> None:
     assert params["backend"] == "databricks"
     assert params["dataset_version"] == "2.1.0"
     assert params["ready_backend"] == "databricks"
+    assert params["override_count"] == 2
+    assert params["override_case_ids"] == "golden_017,golden_022"
+    assert params["runner_error_case_ids"] == "golden_011"
 
 
 def test_log_benchmark_report_uses_local_mlflow_contract(tmp_path: Path) -> None:
