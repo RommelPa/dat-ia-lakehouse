@@ -9,7 +9,10 @@ del motor durante la validación determinística.
 from dataclasses import dataclass
 from typing import Any
 
+import sqlglot
 from langchain_community.utilities import SQLDatabase
+from sqlglot import exp
+from sqlglot.errors import ParseError
 
 from app.core.config import Settings
 from app.database.backend import QueryBackend, create_query_backend
@@ -56,11 +59,16 @@ def _execute_postgres(
 
     stripped = str(sql_text or "").strip().rstrip(";")
 
-    if not stripped.lower().startswith("select"):
-        return {"error": "Solo se permiten sentencias SELECT."}
-
     if ";" in stripped:
         return {"error": "Solo se permite una sentencia SQL por consulta."}
+
+    try:
+        expression = sqlglot.parse_one(stripped, read="postgres")
+    except ParseError:
+        return {"error": "Solo se permiten sentencias SELECT."}
+
+    if not isinstance(expression, exp.Select):
+        return {"error": "Solo se permiten sentencias SELECT."}
 
     if row_limit < 1:
         return {"error": "row_limit debe ser mayor que cero."}
