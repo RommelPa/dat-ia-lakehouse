@@ -61,6 +61,13 @@ from transformers import (
 
 SETTINGS = Settings()
 
+
+def _active_sql_dialect() -> str:
+    """Dialecto SQL canónico del backend activo."""
+    if query_runtime is not None:
+        return query_runtime.sql_dialect
+    return SETTINGS.sql_dialect
+
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 APP_ENV = os.environ.get("APP_ENV", "test")
@@ -1252,10 +1259,22 @@ def build_rag_response(
     Do not repeat the same mistake.
     """
 
+    sql_dialect = _active_sql_dialect()
+    dialect_guidance = (
+        "Use Databricks SQL syntax and functions." 
+        if sql_dialect == "databricks"
+        else "Use PostgreSQL syntax and functions."
+    )
+
     augmented_prompt = f"""
     ### Task
     Generate a SQL query to answer [QUESTION]{question}[/QUESTION]
     {structure_section}
+    ### Target SQL dialect
+    - dialect: {sql_dialect}
+    - {dialect_guidance}
+    - Do not emit functions or syntax that belong only to another SQL dialect.
+
     ### Instructions
     - If you cannot answer the question with the available database schema,
       return 'I do not know'.
@@ -1384,7 +1403,12 @@ def generate_validated_sql(
                 update={"sql": normalized_sql}
             )
 
-        validation = validate_sql_stage(rag_response.sql, allowed_tables, db=db)
+        validation = validate_sql_stage(
+            rag_response.sql,
+            allowed_tables,
+            db=db,
+            dialect=_active_sql_dialect(),
+        )
         if not validation.is_valid:
             feedback = SqlVerdict(
                 issues=[validation.error],
@@ -1596,9 +1620,15 @@ def validate_sql_stage(
     sql: str,
     allowed_tables: list[str],
     db: SQLDatabase | None = None,
+    dialect: str | None = None,
 ) -> SqlValidation:
     """Ejecuta el validador determinístico dentro del árbol de trazas."""
-    return validate_sql(sql, allowed_tables, db=db)
+    return validate_sql(
+        sql,
+        allowed_tables,
+        db=db,
+        dialect=dialect or _active_sql_dialect(),
+    )
 
 
 @traceable_stage(
