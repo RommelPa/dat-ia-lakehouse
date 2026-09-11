@@ -129,7 +129,13 @@ def _report_params(report: Mapping[str, Any]) -> dict[str, Any]:
 
     ready = report.get("ready")
     if isinstance(ready, Mapping):
-        for key in ("backend", "database", "optimizer_mode"):
+        for key in (
+            "backend",
+            "database",
+            "optimizer_mode",
+            "gemini_max_retries",
+            "gemini_timeout_seconds",
+        ):
             value = ready.get(key)
             if value is not None:
                 params[f"ready_{key}"] = value
