@@ -144,6 +144,14 @@ def _trace_tags(
     )
 
 
+def _gemini_runtime_kwargs() -> dict[str, Any]:
+    """Opciones comunes de resiliencia para las llamadas Gemini."""
+    return {
+        "max_retries": SETTINGS.gemini_max_retries,
+        "timeout": SETTINGS.gemini_timeout_seconds,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Lifespan: inicialización al arrancar la app
 # ---------------------------------------------------------------------------
@@ -181,6 +189,7 @@ async def lifespan(app: FastAPI):
             google_api_key=GOOGLE_API_KEY,
             temperature=0.0,
             max_output_tokens=600,
+            **_gemini_runtime_kwargs(),
         ).with_structured_output(RAGResponse)
         print(f"[startup] Generador SQL inicializado con Google Gemini: {MODEL}")
 
@@ -190,6 +199,7 @@ async def lifespan(app: FastAPI):
         google_api_key=GOOGLE_API_KEY,
         temperature=0.0,
         max_output_tokens=700,
+        **_gemini_runtime_kwargs(),
     )
     print("[startup] LangChain ChatGoogleGenerativeAI (optimizer) inicializado.")
 
@@ -199,6 +209,7 @@ async def lifespan(app: FastAPI):
         google_api_key=GOOGLE_API_KEY,
         temperature=0.0,
         max_output_tokens=600,
+        **_gemini_runtime_kwargs(),
     )
     print("[startup] LangChain ChatGoogleGenerativeAI (answer) inicializado.")
 
@@ -210,6 +221,7 @@ async def lifespan(app: FastAPI):
         google_api_key=GOOGLE_API_KEY,
         temperature=0.0,
         max_output_tokens=500,
+        **_gemini_runtime_kwargs(),
     )
     print("[startup] LangChain ChatGoogleGenerativeAI (judge) inicializado.")
 
@@ -1777,6 +1789,8 @@ def ready() -> dict:
         ),
         "backend": backend,
         "optimizer_mode": SETTINGS.query_optimizer_mode,
+        "gemini_max_retries": SETTINGS.gemini_max_retries,
+        "gemini_timeout_seconds": SETTINGS.gemini_timeout_seconds,
         "message": message,
         "langsmith": langsmith_connection_status(),
     }
