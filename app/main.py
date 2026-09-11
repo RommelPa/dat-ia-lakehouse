@@ -2228,9 +2228,9 @@ async def query_answer(request: QueryRequest):
             "memory_retrieval",
             _search_query_memory_v2_examples,
             optimized_query,
+            n_results=2,
+            distance_threshold=QUERY_MEMORY_V2_DISTANCE_THRESHOLD,
             wrap_exceptions=True,
-        n_results=2,
-            distance_threshold=(QUERY_MEMORY_V2_DISTANCE_THRESHOLD),
         )
     except StageExecutionError as exc:
         return _pipeline_error_response(
@@ -2260,10 +2260,10 @@ async def query_answer(request: QueryRequest):
             retrieve_ddl_context,
             text_collection,
             query_for_retrieval,
-            wrap_exceptions=True,
-        suggested_tables=(optimized_query.suggested_tables),
-        distance_threshold=retrieval_distance_threshold,
+            suggested_tables=optimized_query.suggested_tables,
+            distance_threshold=retrieval_distance_threshold,
             excluded_tables=business_rule_excluded_tables,
+            wrap_exceptions=True,
         )
     except StageExecutionError as exc:
         return _pipeline_error_response(
