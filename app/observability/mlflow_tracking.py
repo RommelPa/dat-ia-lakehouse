@@ -64,6 +64,12 @@ def _summary_metrics(report: Mapping[str, Any]) -> dict[str, float]:
         if isinstance(value, (int, float)):
             metrics[name] = float(value)
 
+    stage_latencies = summary.get("avg_stage_latency_ms")
+    if isinstance(stage_latencies, Mapping):
+        for stage, value in stage_latencies.items():
+            if isinstance(value, (int, float)):
+                metrics[f"stage_latency.{stage}.avg_ms"] = float(value)
+
     return metrics
 
 
