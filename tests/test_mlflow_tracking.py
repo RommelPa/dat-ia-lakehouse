@@ -85,6 +85,10 @@ def _report() -> dict:
                 "llm": 950.0,
                 "database": 180.0,
             },
+            "avg_stage_call_counts": {
+                "optimizer": 1.0,
+                "sql_judgement": 1.5,
+            },
         },
     }
 
@@ -99,6 +103,8 @@ def test_summary_metrics_flattens_benchmark_metrics() -> None:
     assert metrics["stage_latency.sql_generation.avg_ms"] == 700.0
     assert metrics["component_latency.llm.avg_ms"] == 950.0
     assert metrics["component_latency.database.avg_ms"] == 180.0
+    assert metrics["stage_calls.optimizer.avg"] == 1.0
+    assert metrics["stage_calls.sql_judgement.avg"] == 1.5
 
 
 def test_report_params_keep_low_cardinality_metadata() -> None:
