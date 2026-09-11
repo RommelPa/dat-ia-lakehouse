@@ -1,8 +1,8 @@
 """Diagnóstico aislado de latencia del Databricks SQL Connector.
 
-Abre una sola conexión y ejecuta la misma consulta SELECT varias veces para
-separar costo de conexión frente a ejecuciones sucesivas sobre una conexión ya
-abierta. No modifica el runtime de Dat-IA ni reutiliza conexiones en producción.
+Abre una sola conexión y ejecuta una consulta SELECT repetida o dos consultas
+SELECT diferentes para separar costo de conexión, warm session y posible cache.
+No modifica el runtime de Dat-IA ni reutiliza conexiones en producción.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Mide connect/cursor/execute/fetch/close de Databricks usando "
-            "una sola conexión y una consulta SELECT repetida."
+            "una sola conexión, con una consulta repetida o dos distintas."
         )
     )
     parser.add_argument(
@@ -33,10 +33,21 @@ def parse_args() -> argparse.Namespace:
         help="Consulta SELECT de diagnóstico.",
     )
     parser.add_argument(
+        "--sql-next",
+        default=None,
+        help=(
+            "Segunda consulta SELECT distinta. Si se define, se ejecuta "
+            "después de --sql sobre la misma conexión."
+        ),
+    )
+    parser.add_argument(
         "--runs",
         type=int,
         default=2,
-        help="Número de ejecuciones sobre la misma conexión.",
+        help=(
+            "Número de ejecuciones de --sql cuando --sql-next no se define. "
+            "Por defecto: 2."
+        ),
     )
     return parser.parse_args()
 
@@ -67,11 +78,17 @@ def diagnose_connection(
     settings: Settings,
     sql_text: str,
     runs: int,
+    sql_next: str | None = None,
 ) -> dict[str, Any]:
     if runs < 1:
         raise ValueError("--runs debe ser mayor que cero.")
 
     sql = _validate_read_only_select(sql_text)
+    next_sql = (
+        _validate_read_only_select(sql_next)
+        if sql_next is not None
+        else None
+    )
     if not settings.databricks_server_hostname:
         raise ValueError("Falta DATABRICKS_SERVER_HOSTNAME.")
     if not settings.databricks_http_path:
@@ -79,8 +96,14 @@ def diagnose_connection(
 
     connection = None
     cursor = None
+    execution_plan = (
+        [("primary", sql), ("next", next_sql)]
+        if next_sql is not None
+        else [("primary", sql)] * runs
+    )
+
     report: dict[str, Any] = {
-        "runs": runs,
+        "runs": len(execution_plan),
         "catalog": settings.databricks_catalog,
         "schema": settings.databricks_schema,
         "connect_ms": None,
@@ -104,9 +127,12 @@ def diagnose_connection(
         cursor = connection.cursor()
         report["cursor_ms"] = _elapsed_ms(started)
 
-        for index in range(1, runs + 1):
+        for index, (query_label, query_sql) in enumerate(
+            execution_plan,
+            start=1,
+        ):
             started = time.perf_counter()
-            cursor.execute(sql)
+            cursor.execute(query_sql)
             execute_ms = _elapsed_ms(started)
 
             started = time.perf_counter()
@@ -116,6 +142,7 @@ def diagnose_connection(
             report["executions"].append(
                 {
                     "run": index,
+                    "query": query_label,
                     "execute_ms": execute_ms,
                     "fetch_ms": fetch_ms,
                     "rows_fetched": len(rows),
@@ -154,6 +181,7 @@ def main() -> None:
         settings=settings,
         sql_text=args.sql,
         runs=args.runs,
+        sql_next=args.sql_next,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
