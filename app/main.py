@@ -2480,6 +2480,7 @@ async def query_answer(request: QueryRequest):
             check_groundedness_stage,
             answer_text,
             rows,
+            request.question,
         )
 
     warnings = list(result_check.warnings)
