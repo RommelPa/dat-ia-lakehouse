@@ -267,6 +267,32 @@ def _metric_summary(
     }
 
 
+def _average_stage_latencies(
+    case_results: Sequence[Mapping[str, Any]],
+) -> dict[str, float]:
+    """Promedia timings internos reportados por la API, por nombre de etapa."""
+    samples: dict[str, list[float]] = {}
+
+    for case in case_results:
+        output = case.get("output")
+        if not isinstance(output, Mapping):
+            continue
+
+        timings = output.get("timings_ms")
+        if not isinstance(timings, Mapping):
+            continue
+
+        for stage, value in timings.items():
+            if isinstance(value, (int, float)):
+                samples.setdefault(str(stage), []).append(float(value))
+
+    return {
+        stage: round(sum(values) / len(values), 3)
+        for stage, values in sorted(samples.items())
+        if values
+    }
+
+
 def _summary(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     metric_names = (
         "status_match",
@@ -307,6 +333,7 @@ def _summary(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         else None,
         "min_latency_ms": round(min(latencies), 3) if latencies else None,
         "max_latency_ms": round(max(latencies), 3) if latencies else None,
+        "avg_stage_latency_ms": _average_stage_latencies(case_results),
     }
 
 
