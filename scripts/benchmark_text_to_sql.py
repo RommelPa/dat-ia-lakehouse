@@ -114,7 +114,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mlflow-tracking-uri",
         default=DEFAULT_MLFLOW_TRACKING_URI,
-        help="Tracking URI de MLflow; por defecto usa ./mlruns local.",
+        help="Tracking URI de MLflow; por defecto usa SQLite local (./mlflow.db).",
     )
     parser.add_argument(
         "--mlflow-experiment",
