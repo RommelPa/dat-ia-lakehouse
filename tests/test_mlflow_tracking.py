@@ -77,6 +77,10 @@ def _report() -> dict:
             "avg_latency_ms": 1234.5,
             "min_latency_ms": 500.0,
             "max_latency_ms": 3000.0,
+            "avg_stage_latency_ms": {
+                "optimizer": 250.0,
+                "sql_generation": 700.0,
+            },
         },
     }
 
@@ -87,6 +91,8 @@ def test_summary_metrics_flattens_benchmark_metrics() -> None:
     assert metrics["effective_result_match.rate"] == 1.0
     assert metrics["effective_result_match.passed"] == 30.0
     assert metrics["avg_latency_ms"] == 1234.5
+    assert metrics["stage_latency.optimizer.avg_ms"] == 250.0
+    assert metrics["stage_latency.sql_generation.avg_ms"] == 700.0
 
 
 def test_report_params_keep_low_cardinality_metadata() -> None:
