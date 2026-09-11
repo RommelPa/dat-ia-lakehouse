@@ -1790,10 +1790,7 @@ def ready() -> dict:
 )
 def query_optimize(request: QueryRequest) -> QueryOptimizeResponse:
     try:
-        optimized_query = timed_call(
-            timings_ms,
-            "optimizer",
-            optimize_query_stage,
+        optimized_query = optimize_query_stage(
             request.question,
             llm=optimizer_llm,
         )
@@ -2001,10 +1998,7 @@ async def query_json(request: QueryRequest):
         )
 
     try:
-        optimized_query = timed_call(
-            timings_ms,
-            "optimizer",
-            optimize_query_stage,
+        optimized_query = optimize_query_stage(
             request.question,
             llm=optimizer_llm,
         )
