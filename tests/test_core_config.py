@@ -32,6 +32,8 @@ def test_settings_defaults(monkeypatch) -> None:
     assert settings.chroma_host is None
     assert settings.chroma_port == 8000
     assert settings.use_cloudflare_llm is False
+    assert settings.query_backend == "postgres"
+    assert settings.sql_dialect == "postgres"
     assert settings.sql_generation_provider == "google"
     assert settings.sql_generation_model == settings.model
 
@@ -41,6 +43,7 @@ def test_settings_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("APP_VERSION", "0.3.0")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("QUERY_BACKEND", "databricks")
     monkeypatch.setenv("CHROMA_HOST", "chroma")
     monkeypatch.setenv("CHROMA_PORT", "9000")
     monkeypatch.setenv("USE_CLOUDFLARE_LLM", "true")
@@ -53,6 +56,8 @@ def test_settings_reads_environment(monkeypatch) -> None:
     assert settings.app_version == "0.3.0"
     assert settings.google_api_key == "test-google-key"
     assert settings.database_url == "postgresql://example"
+    assert settings.query_backend == "databricks"
+    assert settings.sql_dialect == "databricks"
     assert settings.chroma_host == "chroma"
     assert settings.chroma_port == 9000
     assert settings.use_cloudflare_llm is True
