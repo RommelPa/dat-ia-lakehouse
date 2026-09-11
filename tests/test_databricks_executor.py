@@ -148,7 +148,7 @@ def test_execute_accepts_read_only_cte() -> None:
 
 
 def test_execute_records_databricks_substep_timings(monkeypatch) -> None:
-    from app.database import databricks as databricks_module
+    from app.observability import timing
 
     cursor = FakeCursor(
         rows=[(1,)],
@@ -164,7 +164,7 @@ def test_execute_records_databricks_substep_timings(monkeypatch) -> None:
         6.0, 6.006,
     ])
     monkeypatch.setattr(
-        databricks_module.time,
+        timing.time,
         "perf_counter",
         lambda: next(ticks),
     )
