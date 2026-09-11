@@ -136,3 +136,16 @@ def test_create_query_runtime_builds_databricks_without_sql_database(monkeypatch
     assert runtime.name == "databricks"
     assert runtime.executor is executor
     assert runtime.validation_db is None
+
+
+def test_query_runtime_accepts_postgres_read_only_cte() -> None:
+    db = FakeSQLDatabase(
+        FakePostgresResult([{"value": 1}])
+    )
+    runtime = QueryRuntime(name="postgres", executor=db, validation_db=db)
+
+    sql = "WITH demo AS (SELECT 1 AS value) SELECT value FROM demo"
+    result = runtime.execute(sql)
+
+    assert result == {"rows": [{"value": 1}]}
+    assert db.calls == [(sql, "cursor")]
