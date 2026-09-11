@@ -2,7 +2,7 @@
 
 La integración es deliberadamente perezosa: importar Dat-IA no requiere
 `mlflow`. El paquete solo se carga cuando el usuario activa tracking en un
-benchmark. Así el runtime base sigue liviano y el tracking local puede usarse
+benchmark. Así el runtime base sigue liviano y el tracking local usa SQLite
 sin servicios pagos ni credenciales.
 """
 
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 DEFAULT_MLFLOW_EXPERIMENT = "dat_ia_text_to_sql"
-DEFAULT_MLFLOW_TRACKING_URI = "file:./mlruns"
+DEFAULT_MLFLOW_TRACKING_URI = "sqlite:///mlflow.db"
 
 
 def _load_mlflow() -> Any:
