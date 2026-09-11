@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 from app.optimizer.query_optimizer import OptimizedQuery, QueryFilter
@@ -196,3 +197,43 @@ def test_check_groundedness_does_not_accept_wrong_thousands_interpretation() -> 
 
     assert result.ok is False
     assert result.unsupported_numbers == ["99.441"]
+
+
+def test_check_groundedness_accepts_year_from_datetime_value() -> None:
+    rows = [
+        {
+            "month": datetime(2018, 1, 1),
+            "order_count": 7069,
+        }
+    ]
+    answer = "Enero 2018: 7069 órdenes."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_accepts_year_from_iso_date_string() -> None:
+    rows = [
+        {
+            "month": "2018-01-01T00:00:00Z",
+            "order_count": 7069,
+        }
+    ]
+    answer = "Enero 2018: 7069 órdenes."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
+
+
+def test_check_groundedness_accepts_numeric_string_values() -> None:
+    rows = [{"month": "2018-01-01T00:00:00Z", "revenue": "924645.00"}]
+    answer = "Enero 2018: 924645.00."
+
+    result = check_groundedness(answer, rows)
+
+    assert result.ok is True
+    assert result.unsupported_numbers == []
