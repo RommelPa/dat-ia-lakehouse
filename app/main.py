@@ -32,6 +32,7 @@ from app.observability import (
     build_trace_metadata,
     build_trace_tags,
     langsmith_connection_status,
+    timed_call,
     traceable_stage,
 )
 
@@ -476,6 +477,7 @@ class AnswerResponse(BaseModel):
     shield: ShieldInfo | None = None
     optimized: QueryOptimizeResponse | None = None
     retrieval: RetrievalInfo | None = None
+    timings_ms: dict[str, float] = Field(default_factory=dict)
 
 
 class _AnswerPayload(BaseModel):
@@ -1343,6 +1345,7 @@ def generate_validated_sql(
     max_attempts: int = 2,
     table_policies: str = "",
     business_rules_text: str = "",
+    timings_ms: dict[str, float] | None = None,
 ) -> tuple[RAGResponse, SqlVerdict | None, int]:
     """Genera SQL con hasta `max_attempts` intentos, validando y juzgando cada uno.
 
@@ -1385,7 +1388,10 @@ def generate_validated_sql(
     rag_response: RAGResponse | None = None
 
     for attempt in range(1, max_attempts + 1):
-        rag_response = build_rag_response(
+        rag_response = timed_call(
+            timings_ms,
+            "sql_generation",
+            build_rag_response,
             question,
             ddl,
             optimized_query=optimized_query,
@@ -1407,7 +1413,10 @@ def generate_validated_sql(
                 update={"sql": normalized_sql}
             )
 
-        validation = validate_sql_stage(
+        validation = timed_call(
+            timings_ms,
+            "sql_validation",
+            validate_sql_stage,
             rag_response.sql,
             allowed_tables,
             db=db,
@@ -1428,7 +1437,10 @@ def generate_validated_sql(
         # string exacto que se validó.
         rag_response = rag_response.model_copy(update={"sql": validation.sql})
 
-        verdict = judge_sql_stage(
+        verdict = timed_call(
+            timings_ms,
+            "sql_judgement",
+            judge_sql_stage,
             optimized_query,
             rag_response.sql,
             judge_llm,
@@ -1778,7 +1790,10 @@ def ready() -> dict:
 )
 def query_optimize(request: QueryRequest) -> QueryOptimizeResponse:
     try:
-        optimized_query = optimize_query_stage(
+        optimized_query = timed_call(
+            timings_ms,
+            "optimizer",
+            optimize_query_stage,
             request.question,
             llm=optimizer_llm,
         )
@@ -2095,7 +2110,13 @@ async def query_answer(request: QueryRequest):
     existiendo como endpoints independientes pero ya no hace falta
     llamarlos aparte para esto).
     """
-    label, score = classify_shield(request.question)
+    timings_ms: dict[str, float] = {}
+    label, score = timed_call(
+        timings_ms,
+        "input_shield",
+        classify_shield,
+        request.question,
+    )
     shield_info = ShieldInfo(label=label, score=score)
 
     if should_block_input(request.question, label, score):
@@ -2109,6 +2130,7 @@ async def query_answer(request: QueryRequest):
             sources="",
             status="blocked",
             shield=shield_info,
+            timings_ms=timings_ms,
         )
 
     if text_collection is None or text_collection._collection.count() == 0:
@@ -2135,7 +2157,10 @@ async def query_answer(request: QueryRequest):
     # `optimized_query.original_question` directamente más abajo (ver nota
     # equivalente en query_json).
     query_for_retrieval = optimized_query.normalized_question
-    memory_examples = _search_query_memory_v2_examples(
+    memory_examples = timed_call(
+        timings_ms,
+        "memory_retrieval",
+        _search_query_memory_v2_examples,
         optimized_query,
         n_results=2,
         distance_threshold=(QUERY_MEMORY_V2_DISTANCE_THRESHOLD),
@@ -2153,7 +2178,10 @@ async def query_answer(request: QueryRequest):
     )
 
     retrieval_distance_threshold = 0.7
-    resp = retrieve_ddl_context(
+    resp = timed_call(
+        timings_ms,
+        "ddl_retrieval",
+        retrieve_ddl_context,
         text_collection,
         query_for_retrieval,
         suggested_tables=(optimized_query.suggested_tables),
@@ -2195,6 +2223,7 @@ async def query_answer(request: QueryRequest):
         memory_examples=memory_examples,
         table_policies=table_policies,
         business_rules_text=business_rules_text,
+        timings_ms=timings_ms,
     )
 
     if rag_response.sources == "":
@@ -2243,7 +2272,10 @@ async def query_answer(request: QueryRequest):
             "SQL query backend is not configured.",
         )
 
-    execution = execute_sql(
+    execution = timed_call(
+        timings_ms,
+        "sql_execution",
+        execute_sql,
         active_query_resource,
         rag_response.sql,
     )
@@ -2262,27 +2294,51 @@ async def query_answer(request: QueryRequest):
         )
 
     rows = execution["rows"]
-    result_check = check_result_stage(rows, optimized_query)
+    result_check = timed_call(
+        timings_ms,
+        "result_guardrail",
+        check_result_stage,
+        rows,
+        optimized_query,
+    )
 
-    answer_text = synthesize_answer(
+    answer_text = timed_call(
+        timings_ms,
+        "answer_synthesis",
+        synthesize_answer,
         answer_llm,
         request.question,
         rag_response.sql,
         rows,
     )
-    groundedness = check_groundedness_stage(answer_text, rows)
+    groundedness = timed_call(
+        timings_ms,
+        "groundedness",
+        check_groundedness_stage,
+        answer_text,
+        rows,
+    )
 
     if not groundedness.ok:
         # Una sola regeneración con instrucción estricta, no un bucle nuevo:
         # si el número inventado persiste, se entrega igual con warnings.
-        answer_text = synthesize_answer(
+        answer_text = timed_call(
+            timings_ms,
+            "answer_synthesis",
+            synthesize_answer,
             answer_llm,
             request.question,
             rag_response.sql,
             rows,
             strict_numbers=True,
         )
-        groundedness = check_groundedness_stage(answer_text, rows)
+        groundedness = timed_call(
+            timings_ms,
+            "groundedness",
+            check_groundedness_stage,
+            answer_text,
+            rows,
+        )
 
     warnings = list(result_check.warnings)
     if not groundedness.ok:
@@ -2332,6 +2388,7 @@ async def query_answer(request: QueryRequest):
         shield=shield_info,
         optimized=optimized_response,
         retrieval=retrieval_info,
+        timings_ms=timings_ms,
     )
 
 
