@@ -1694,6 +1694,14 @@ def test_query_answer_full_flow_success(monkeypatch) -> None:
     assert "carriers" in body["optimized"]["suggested_tables"]
     assert body["retrieval"]["distance_threshold"] == 0.7
     assert body["retrieval"]["selected_tables"] == ["carriers"]
+    assert "input_shield" in body["timings_ms"]
+    assert "optimizer" in body["timings_ms"]
+    assert "ddl_retrieval" in body["timings_ms"]
+    assert "sql_generation" in body["timings_ms"]
+    assert "sql_validation" in body["timings_ms"]
+    assert "sql_judgement" in body["timings_ms"]
+    assert "sql_execution" in body["timings_ms"]
+    assert "answer_synthesis" in body["timings_ms"]
 
 
 def test_query_answer_warns_when_result_is_truncated(monkeypatch) -> None:
