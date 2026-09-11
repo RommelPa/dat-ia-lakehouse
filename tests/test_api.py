@@ -2395,3 +2395,32 @@ def test_query_answer_uses_query_runtime_when_available(
     assert captured["sql"].startswith(
         "SELECT carrier_name FROM carriers"
     )
+
+
+def test_build_rag_response_includes_active_sql_dialect(monkeypatch) -> None:
+    captured = {}
+
+    class FakeStructuredLlm:
+        def invoke(self, prompt):
+            captured["prompt"] = prompt
+            return main_module.RAGResponse(
+                sql="SELECT 1",
+                sources="",
+                confidence_note="",
+                status="success",
+            )
+
+    monkeypatch.setattr(main_module, "rag_llm", FakeStructuredLlm())
+    monkeypatch.setattr(
+        main_module,
+        "_active_sql_dialect",
+        lambda: "databricks",
+    )
+
+    main_module.build_rag_response(
+        "pregunta",
+        "CREATE TABLE demo (id INT);",
+    )
+
+    assert "dialect: databricks" in captured["prompt"]
+    assert "Use Databricks SQL syntax and functions." in captured["prompt"]
