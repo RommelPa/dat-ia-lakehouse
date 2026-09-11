@@ -7,6 +7,7 @@ def test_settings_defaults(monkeypatch) -> None:
         "APP_VERSION",
         "GOOGLE_API_KEY",
         "DATABASE_URL",
+        "QUERY_BACKEND",
         "MODEL",
         "EMBED_MODEL",
         "CHROMA_PATH",
