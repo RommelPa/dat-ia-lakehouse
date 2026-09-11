@@ -5,7 +5,7 @@ from app.observability.mlflow_tracking import (
     DEFAULT_MLFLOW_TRACKING_URI,
     log_benchmark_report,
 )
-from app.observability.timing import timed_call
+from app.observability.timing import StageExecutionError, timed_call
 from app.observability.langsmith import (
     build_trace_metadata,
     build_trace_tags,
@@ -36,6 +36,7 @@ __all__ = [
     "sanitize_trace_inputs",
     "sanitize_trace_outputs",
     "summarize_rows",
+    "StageExecutionError",
     "timed_call",
     "traceable_stage",
 ]
