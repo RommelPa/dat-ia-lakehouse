@@ -10,6 +10,8 @@ def test_settings_defaults(monkeypatch) -> None:
         "QUERY_BACKEND",
         "QUERY_OPTIMIZER_MODE",
         "MODEL",
+        "GEMINI_MAX_RETRIES",
+        "GEMINI_TIMEOUT_SECONDS",
         "EMBED_MODEL",
         "CHROMA_PATH",
         "CHROMA_HOST",
@@ -30,6 +32,8 @@ def test_settings_defaults(monkeypatch) -> None:
     assert settings.database_url is None
     assert settings.model == "gemini-3.1-flash-lite-preview"
     assert settings.embed_model == "gemini-embedding-2"
+    assert settings.gemini_max_retries == 6
+    assert settings.gemini_timeout_seconds is None
     assert settings.chroma_path == "./chroma_db"
     assert settings.chroma_host is None
     assert settings.chroma_port == 8000
@@ -48,6 +52,8 @@ def test_settings_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.setenv("QUERY_BACKEND", "databricks")
     monkeypatch.setenv("QUERY_OPTIMIZER_MODE", "rule_based")
+    monkeypatch.setenv("GEMINI_MAX_RETRIES", "2")
+    monkeypatch.setenv("GEMINI_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("CHROMA_HOST", "chroma")
     monkeypatch.setenv("CHROMA_PORT", "9000")
     monkeypatch.setenv("USE_CLOUDFLARE_LLM", "true")
@@ -62,6 +68,8 @@ def test_settings_reads_environment(monkeypatch) -> None:
     assert settings.database_url == "postgresql://example"
     assert settings.query_backend == "databricks"
     assert settings.query_optimizer_mode == "rule_based"
+    assert settings.gemini_max_retries == 2
+    assert settings.gemini_timeout_seconds == 30.0
     assert settings.sql_dialect == "databricks"
     assert settings.chroma_host == "chroma"
     assert settings.chroma_port == 9000
