@@ -32,3 +32,45 @@ def test_timed_call_can_be_disabled() -> None:
     result = timing.timed_call(None, "stage", lambda: "ok")
 
     assert result == "ok"
+
+
+def test_timed_call_counts_visible_invocations(monkeypatch) -> None:
+    ticks = iter([1.0, 1.010, 2.0, 2.020])
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: next(ticks))
+    timings = {}
+    calls = {}
+
+    timing.timed_call(
+        timings,
+        "sql_judgement",
+        lambda: None,
+        call_counts=calls,
+    )
+    timing.timed_call(
+        timings,
+        "sql_judgement",
+        lambda: None,
+        call_counts=calls,
+    )
+
+    assert calls == {"sql_judgement": 2}
+    assert timings == {"sql_judgement": 30.0}
+
+
+def test_timed_call_counts_failed_invocation() -> None:
+    calls = {}
+
+    def fail() -> None:
+        raise RuntimeError("boom")
+
+    try:
+        timing.timed_call(
+            None,
+            "optimizer",
+            fail,
+            call_counts=calls,
+        )
+    except RuntimeError:
+        pass
+
+    assert calls == {"optimizer": 1}
