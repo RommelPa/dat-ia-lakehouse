@@ -71,18 +71,41 @@ def test_query_runtime_delegates_to_databricks_executor(monkeypatch) -> None:
         http_path="/sql/1.0/warehouses/example",
     )
     executor = DatabricksExecutor(config, connect=lambda **kwargs: None)
+    captured = {}
+
+    def fake_execute(
+        sql_text,
+        row_limit=200,
+        *,
+        timings_ms=None,
+    ):
+        captured["sql_text"] = sql_text
+        captured["row_limit"] = row_limit
+        captured["timings_ms"] = timings_ms
+        return {
+            "rows": [{"backend": "databricks", "limit": row_limit}]
+        }
+
     monkeypatch.setattr(
         executor,
         "execute",
-        lambda sql_text, row_limit=200: {
-            "rows": [{"backend": "databricks", "limit": row_limit}]
-        },
+        fake_execute,
     )
     runtime = QueryRuntime(name="databricks", executor=executor)
 
-    result = runtime.execute("SELECT 1", row_limit=25)
+    timings = {}
+    result = runtime.execute(
+        "SELECT 1",
+        row_limit=25,
+        stage_timings_ms=timings,
+    )
 
     assert result == {"rows": [{"backend": "databricks", "limit": 25}]}
+    assert captured == {
+        "sql_text": "SELECT 1",
+        "row_limit": 25,
+        "timings_ms": timings,
+    }
     assert runtime.validation_db is None
     assert runtime.dialect == "databricks"
     assert runtime.sql_dialect == "databricks"
