@@ -74,3 +74,51 @@ def test_timed_call_counts_failed_invocation() -> None:
         pass
 
     assert calls == {"optimizer": 1}
+
+
+def test_timed_call_wraps_failed_stage_without_exposing_message(
+    monkeypatch,
+) -> None:
+    ticks = iter([3.0, 3.025])
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: next(ticks))
+    timings = {}
+    calls = {}
+
+    def fail() -> None:
+        raise TimeoutError("secret provider detail")
+
+    try:
+        timing.timed_call(
+            timings,
+            "sql_generation",
+            fail,
+            call_counts=calls,
+            wrap_exceptions=True,
+        )
+    except timing.StageExecutionError as exc:
+        assert exc.stage == "sql_generation"
+        assert exc.error_type == "TimeoutError"
+        assert "secret provider detail" not in str(exc)
+    else:
+        raise AssertionError("StageExecutionError was not raised")
+
+    assert timings == {"sql_generation": 25.0}
+    assert calls == {"sql_generation": 1}
+
+
+def test_timed_call_wraps_even_when_timing_is_disabled() -> None:
+    def fail() -> None:
+        raise RuntimeError("internal detail")
+
+    try:
+        timing.timed_call(
+            None,
+            "sql_judgement",
+            fail,
+            wrap_exceptions=True,
+        )
+    except timing.StageExecutionError as exc:
+        assert exc.stage == "sql_judgement"
+        assert exc.error_type == "RuntimeError"
+    else:
+        raise AssertionError("StageExecutionError was not raised")
