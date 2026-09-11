@@ -1622,15 +1622,8 @@ def synthesize_answer(
 @traceable_stage(
     name="dat-ia.optimizer.normalize-query",
     run_type="chain",
-    metadata=_trace_metadata(
-        operation="query_optimization",
-        llm_provider="google",
-        llm_model=MODEL,
-    ),
-    tags=_trace_tags(
-        operation="query_optimization",
-        llm_provider="google",
-    ),
+    metadata=_trace_metadata(operation="query_optimization"),
+    tags=_trace_tags(operation="query_optimization"),
 )
 def optimize_query_stage(
     question: str,
