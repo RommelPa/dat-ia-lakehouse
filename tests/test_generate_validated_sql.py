@@ -242,3 +242,35 @@ def test_generate_validated_sql_applies_business_sql_normalization(monkeypatch) 
     assert verdict is not None and verdict.is_valid
     assert "order_delivered_customer_date" not in rag_response.sql
     assert rag_response.sql.count("order_purchase_timestamp") == 2
+
+
+def test_validate_sql_stage_uses_active_databricks_dialect(monkeypatch) -> None:
+    captured = {}
+
+    def fake_validate_sql(sql, allowed_tables, db=None, dialect="postgres"):
+        captured["sql"] = sql
+        captured["allowed_tables"] = allowed_tables
+        captured["db"] = db
+        captured["dialect"] = dialect
+        return main_module.SqlValidation(
+            is_valid=True,
+            stage="ok",
+            error="",
+            sql=sql,
+        )
+
+    monkeypatch.setattr(main_module, "validate_sql", fake_validate_sql)
+    monkeypatch.setattr(
+        main_module,
+        "_active_sql_dialect",
+        lambda: "databricks",
+    )
+
+    result = main_module.validate_sql_stage(
+        "SELECT 1",
+        [],
+        db=None,
+    )
+
+    assert result.is_valid is True
+    assert captured["dialect"] == "databricks"
