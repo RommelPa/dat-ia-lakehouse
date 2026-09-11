@@ -303,7 +303,7 @@ def check_groundedness(
     # Algunas consultas devuelven un porcentaje ya escalado (8.11) bajo un
     # alias no porcentual. Si la pregunta pide explícitamente un porcentaje,
     # ese valor crudo también puede respaldar una redacción con "%".
-    if _question_requests_percentage(question):
+    if _question_requests_percentage(question) and len(row_values) == 1:
         percentage_values.update(row_values)
 
     unsupported = []
