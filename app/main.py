@@ -63,10 +63,14 @@ SETTINGS = Settings()
 
 
 def _active_sql_dialect() -> str:
-    """Dialecto SQL canónico del backend activo."""
-    if query_runtime is not None:
-        return query_runtime.sql_dialect
-    return SETTINGS.sql_dialect
+    """Dialecto SQL canónico del backend activo.
+
+    Durante tests y la migración incremental puede existir un runtime fake
+    sin la propiedad nueva; en ese caso se conserva el dialecto configurado
+    como fallback compatible.
+    """
+    runtime_dialect = getattr(query_runtime, "sql_dialect", None)
+    return str(runtime_dialect or SETTINGS.sql_dialect)
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
