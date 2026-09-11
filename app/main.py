@@ -1469,6 +1469,8 @@ def execute_sql(
     db: SQLDatabase | QueryRuntime,
     sql: str,
     row_limit: int = 200,
+    *,
+    stage_timings_ms: dict[str, float] | None = None,
 ) -> dict:
     """Ejecuta SQL de solo lectura contra Supabase con guardas de seguridad.
 
@@ -1478,7 +1480,11 @@ def execute_sql(
     solo lectura).
     """
     if isinstance(db, QueryRuntime):
-        return db.execute(sql, row_limit=row_limit)
+        return db.execute(
+            sql,
+            row_limit=row_limit,
+            stage_timings_ms=stage_timings_ms,
+        )
 
     stripped = sql.strip().rstrip(";")
     if not re.match(r"(?is)^select\b", stripped):
@@ -2294,6 +2300,7 @@ async def query_answer(request: QueryRequest):
         execute_sql,
         active_query_resource,
         rag_response.sql,
+        stage_timings_ms=timings_ms,
     )
 
     if "error" in execution:
