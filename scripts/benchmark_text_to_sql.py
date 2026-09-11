@@ -35,6 +35,11 @@ from app.evaluation import (
     response_status_matches_expected,
     result_facts_match_expected,
 )
+from app.observability.mlflow_tracking import (
+    DEFAULT_MLFLOW_EXPERIMENT,
+    DEFAULT_MLFLOW_TRACKING_URI,
+    log_benchmark_report,
+)
 from scripts.benchmark_query_backends import (
     DEFAULT_DATABRICKS_OVERRIDES_PATH,
     _is_reference_sql_case,
@@ -100,6 +105,26 @@ def parse_args() -> argparse.Namespace:
         "--fail-on-mismatch",
         action="store_true",
         help="Devuelve exit code 1 si algún caso falla el resultado efectivo.",
+    )
+    parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Registra el reporte en MLflow de forma opcional.",
+    )
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        default=DEFAULT_MLFLOW_TRACKING_URI,
+        help="Tracking URI de MLflow; por defecto usa ./mlruns local.",
+    )
+    parser.add_argument(
+        "--mlflow-experiment",
+        default=DEFAULT_MLFLOW_EXPERIMENT,
+        help="Nombre del experimento MLflow.",
+    )
+    parser.add_argument(
+        "--mlflow-run-name",
+        default=None,
+        help="Nombre opcional del run MLflow.",
     )
     return parser.parse_args()
 
@@ -394,6 +419,28 @@ def benchmark(
     return report
 
 
+def _track_with_mlflow(
+    report: Mapping[str, Any],
+    *,
+    report_path: Path,
+    enabled: bool,
+    tracking_uri: str,
+    experiment_name: str,
+    run_name: str | None,
+) -> str | None:
+    """Registra el benchmark solo cuando el usuario lo solicita."""
+    if not enabled:
+        return None
+
+    return log_benchmark_report(
+        report,
+        report_path=report_path,
+        tracking_uri=tracking_uri,
+        experiment_name=experiment_name,
+        run_name=run_name,
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.timeout <= 0:
@@ -410,6 +457,17 @@ def main() -> None:
     )
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
     print(f"Reporte: {args.report_path}")
+
+    mlflow_run_id = _track_with_mlflow(
+        report,
+        report_path=args.report_path,
+        enabled=args.mlflow,
+        tracking_uri=args.mlflow_tracking_uri,
+        experiment_name=args.mlflow_experiment,
+        run_name=args.mlflow_run_name,
+    )
+    if mlflow_run_id is not None:
+        print(f"MLflow run_id: {mlflow_run_id}")
 
     effective = report["summary"]["metrics"]["effective_result_match"]
     if args.fail_on_mismatch and effective["passed"] != effective["total"]:
