@@ -60,8 +60,15 @@ class _FakeJudgeSqlSequence:
         self.verdicts = verdicts
         self.calls = 0
 
-    def __call__(self, optimized_query, sql, llm, source_schema):
-        _ = optimized_query, sql, llm, source_schema
+    def __call__(
+        self,
+        optimized_query,
+        sql,
+        llm,
+        source_schema,
+        dialect="postgres",
+    ):
+        _ = optimized_query, sql, llm, source_schema, dialect
         verdict = self.verdicts[self.calls]
         self.calls += 1
         return verdict
