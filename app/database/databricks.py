@@ -6,13 +6,15 @@ resto de Dat-IA y sus tests sigan funcionando sin instalar el conector hasta
 que el backend Databricks sea activado explícitamente.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
+
+from app.observability import timed_call
 
 
 ConnectCallable = Callable[..., Any]
@@ -85,8 +87,14 @@ class DatabricksExecutor:
         self.config = config
         self._connect = connect or _default_connect
 
-    def execute(self, sql_text: str, row_limit: int = 200) -> dict[str, Any]:
-        """Ejecuta una única consulta de solo lectura y limita sus filas."""
+    def execute(
+        self,
+        sql_text: str,
+        row_limit: int = 200,
+        *,
+        timings_ms: MutableMapping[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Ejecuta una consulta y mide opcionalmente subetapas Databricks."""
         stripped = str(sql_text or "").strip().rstrip(";")
 
         if ";" in stripped:
@@ -109,19 +117,36 @@ class DatabricksExecutor:
         cursor = None
 
         try:
-            connection = self._connect(
+            connection = timed_call(
+                timings_ms,
+                "databricks_connect",
+                self._connect,
                 server_hostname=self.config.server_hostname,
                 http_path=self.config.http_path,
                 auth_type=self.config.auth_type,
                 catalog=self.config.catalog,
                 schema=self.config.schema,
             )
-            cursor = connection.cursor()
-            cursor.execute(stripped)
+            cursor = timed_call(
+                timings_ms,
+                "databricks_cursor",
+                connection.cursor,
+            )
+            timed_call(
+                timings_ms,
+                "databricks_execute",
+                cursor.execute,
+                stripped,
+            )
 
             description = cursor.description or []
             columns = [str(column[0]) for column in description]
-            raw_rows = cursor.fetchmany(size=row_limit)
+            raw_rows = timed_call(
+                timings_ms,
+                "databricks_fetch",
+                cursor.fetchmany,
+                size=row_limit,
+            )
 
             rows = [
                 {
@@ -137,11 +162,19 @@ class DatabricksExecutor:
         finally:
             if cursor is not None:
                 try:
-                    cursor.close()
+                    timed_call(
+                        timings_ms,
+                        "databricks_close",
+                        cursor.close,
+                    )
                 except Exception:
                     pass
             if connection is not None:
                 try:
-                    connection.close()
+                    timed_call(
+                        timings_ms,
+                        "databricks_close",
+                        connection.close,
+                    )
                 except Exception:
                     pass
