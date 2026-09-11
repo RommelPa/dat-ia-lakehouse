@@ -85,12 +85,14 @@ def test_diagnose_connection_reuses_one_connection(monkeypatch) -> None:
     assert report["executions"] == [
         {
             "run": 1,
+            "query": "primary",
             "execute_ms": 30.0,
             "fetch_ms": 40.0,
             "rows_fetched": 1,
         },
         {
             "run": 2,
+            "query": "primary",
             "execute_ms": 50.0,
             "fetch_ms": 60.0,
             "rows_fetched": 1,
@@ -125,3 +127,61 @@ def test_diagnose_connection_rejects_invalid_runs() -> None:
         assert "mayor que cero" in str(exc)
     else:
         raise AssertionError("Se esperaba ValueError")
+
+
+def test_diagnose_connection_runs_distinct_queries_on_same_connection(
+    monkeypatch,
+) -> None:
+    cursor = FakeCursor()
+    connection = FakeConnection(cursor)
+    connect_calls = []
+
+    def fake_connect(**kwargs):
+        connect_calls.append(kwargs)
+        return connection
+
+    ticks = iter([
+        1.0, 1.010,
+        2.0, 2.020,
+        3.0, 3.030,
+        4.0, 4.040,
+        5.0, 5.050,
+        6.0, 6.060,
+        7.0, 7.070,
+    ])
+    monkeypatch.setattr(
+        diagnostic.time,
+        "perf_counter",
+        lambda: next(ticks),
+    )
+
+    report = diagnostic.diagnose_connection(
+        connect=fake_connect,
+        settings=_settings(),
+        sql_text="SELECT COUNT(*) FROM orders",
+        sql_next="SELECT COUNT(*) FROM customers",
+        runs=2,
+    )
+
+    assert len(connect_calls) == 1
+    assert cursor.execute_calls == [
+        "SELECT COUNT(*) FROM orders",
+        "SELECT COUNT(*) FROM customers",
+    ]
+    assert report["runs"] == 2
+    assert report["executions"] == [
+        {
+            "run": 1,
+            "query": "primary",
+            "execute_ms": 30.0,
+            "fetch_ms": 40.0,
+            "rows_fetched": 1,
+        },
+        {
+            "run": 2,
+            "query": "next",
+            "execute_ms": 50.0,
+            "fetch_ms": 60.0,
+            "rows_fetched": 1,
+        },
+    ]
