@@ -55,6 +55,23 @@ DEFAULT_REPORT_PATH = (
     / "text_to_sql_databricks_benchmark.json"
 )
 
+COMPONENT_STAGE_GROUPS: dict[str, tuple[str, ...]] = {
+    "llm": (
+        "optimizer",
+        "sql_generation",
+        "sql_judgement",
+        "answer_synthesis",
+    ),
+    "database": ("sql_execution",),
+    "retrieval": ("memory_retrieval", "ddl_retrieval"),
+    "guardrails": (
+        "input_shield",
+        "sql_validation",
+        "result_guardrail",
+        "groundedness",
+    ),
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -293,6 +310,42 @@ def _average_stage_latencies(
     }
 
 
+def _average_component_latencies(
+    case_results: Sequence[Mapping[str, Any]],
+) -> dict[str, float]:
+    """Promedia latencia total por componente funcional del pipeline.
+
+    Los componentes se calculan por caso y luego se promedian, evitando
+    mezclar denominadores cuando una respuesta no llegó a ejecutar todas
+    las etapas. "llm" representa llamadas LLM visibles en Dat-IA; no
+    intenta inferir reintentos internos del proveedor.
+    """
+    samples: dict[str, list[float]] = {}
+
+    for case in case_results:
+        output = case.get("output")
+        if not isinstance(output, Mapping):
+            continue
+
+        timings = output.get("timings_ms")
+        if not isinstance(timings, Mapping):
+            continue
+
+        for component, stages in COMPONENT_STAGE_GROUPS.items():
+            values = [
+                float(timings[stage])
+                for stage in stages
+                if isinstance(timings.get(stage), (int, float))
+            ]
+            if values:
+                samples.setdefault(component, []).append(sum(values))
+
+    return {
+        component: round(sum(values) / len(values), 3)
+        for component, values in sorted(samples.items())
+        if values
+    }
+
 def _summary(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     metric_names = (
         "status_match",
@@ -334,6 +387,7 @@ def _summary(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "min_latency_ms": round(min(latencies), 3) if latencies else None,
         "max_latency_ms": round(max(latencies), 3) if latencies else None,
         "avg_stage_latency_ms": _average_stage_latencies(case_results),
+        "avg_component_latency_ms": _average_component_latencies(case_results),
     }
 
 
