@@ -241,3 +241,24 @@ def test_judge_prompt_preserves_purchase_timestamp_business_invariant() -> None:
     assert "Regla determinística autorizada" in prompt
     assert "order_purchase_timestamp" in prompt
     assert "No rechaces el SQL por usar la fecha de compra" in prompt
+
+
+def test_judge_sql_includes_target_dialect_in_prompt() -> None:
+    payload = {
+        "issues": [],
+        "is_valid": True,
+        "answers_question": True,
+        "suggested_fix": "",
+        "confidence": 1.0,
+    }
+    llm = FakeJudgeLlm(payload)
+
+    judge_sql(
+        _optimized_query(),
+        "SELECT carrier_name FROM carriers",
+        llm,
+        dialect="databricks",
+    )
+
+    prompt = llm.captured_prompts[0]
+    assert "dialect: databricks" in prompt
